@@ -23,4 +23,4 @@ In the root dir
 
 # Some renders :)
 
-[Car](readme/reflection.png)
+![Car](readme/reflection.png)
