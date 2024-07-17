@@ -20,3 +20,7 @@ In the root dir
 ```./build/PathTracingRenderer```
   
 **note make sure it is using your dedicated/desired GPU**
+
+# Some renders :)
+
+[Car](readme/reflection.png)
