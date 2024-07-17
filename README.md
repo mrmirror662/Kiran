@@ -17,6 +17,6 @@ run:
   
 In the root dir  
 
-``` ././build/PathTracingRenderer```
+```./build/PathTracingRenderer```
   
 **note make sure it is using your dedicated/desired GPU**
