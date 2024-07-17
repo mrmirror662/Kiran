@@ -1,0 +1,9 @@
+.cache
+assets
+build
+x64
+e1Out.txt
+Makefile
+rtgl.vcxproj
+rtgl.vcxproj.filters
+rtgl.vcxproj.user

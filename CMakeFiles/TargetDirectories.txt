@@ -1,0 +1,3 @@
+/home/barath/dev/kiran/rtgl/CMakeFiles/PathTracingRenderer.dir
+/home/barath/dev/kiran/rtgl/CMakeFiles/edit_cache.dir
+/home/barath/dev/kiran/rtgl/CMakeFiles/rebuild_cache.dir
