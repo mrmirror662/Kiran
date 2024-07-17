@@ -24,3 +24,10 @@ In the root dir
 # Some renders :)
 
 ![Car](readme/reflection.png)
+
+![Caustics](readme/glass.png)
+
+![Metals](readme/metalglass.png)
+
+![Test Scene](readme/multiple.png)
+
