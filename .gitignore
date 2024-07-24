@@ -8,3 +8,6 @@ rtgl.vcxproj
 rtgl.vcxproj.filters
 rtgl.vcxproj.user
 CMakeFiles
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
