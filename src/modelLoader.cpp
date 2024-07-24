@@ -1,4 +1,6 @@
 #include"modelLoader.h"
+#include <OBJ_Loader/OBJ_Loader.h>
+
 inline glm::vec3 objtoglm(const objl::Vector3& in)
 {
 	glm::vec3 out = { in.X,in.Y,in.Z };

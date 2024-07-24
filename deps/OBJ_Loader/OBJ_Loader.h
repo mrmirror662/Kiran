@@ -1,5 +1,4 @@
 // OBJ_Loader.h - A Single Header OBJ Model Loader
-
 #pragma once
 
 // Iostream - STD I/O Library
@@ -722,7 +721,7 @@ namespace objl
 		std::vector<Material> LoadedMaterials;
 
 	private:
-		// Generate vertices from a list of positions, 
+		// Generate vertices from a list of positions,
 		//	tcoords, normals and a face line
 		void GenVerticesFromRawOBJ(std::vector<Vertex>& oVerts,
 			const std::vector<Vector3>& iPositions,
@@ -817,8 +816,8 @@ namespace objl
 			}
 
 			// take care of missing normals
-			// these may not be truly acurate but it is the 
-			// best they get for not compiling a mesh with normals	
+			// these may not be truly acurate but it is the
+			// best they get for not compiling a mesh with normals
 			if (noNormal)
 			{
 				Vector3 A = oVerts[0].Position - oVerts[1].Position;

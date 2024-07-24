@@ -3,6 +3,7 @@
 #include"primitives.h"
 #include "modelLoader.h"
 #include "imageLoader.h"
+#include <iostream>
 inline Scene testSceneBox()
 {
 	using namespace glm;
