@@ -7,3 +7,4 @@ Makefile
 rtgl.vcxproj
 rtgl.vcxproj.filters
 rtgl.vcxproj.user
+CMakeFiles
