@@ -34,30 +34,31 @@ struct BoundingBox {
            (point.y >= min.y && point.y <= max.y) &&
            (point.z >= min.z && point.z <= max.z);
   }
+  static BoundingBox getAABB(const Triangle &t) {
+    auto v0 = t.v0;
+    auto v1 = t.v1;
+    auto v2 = t.v2;
+
+    auto min_x = std::min({v0.x, v1.x, v2.x});
+    auto min_y = std::min({v0.y, v1.y, v2.y});
+    auto min_z = std::min({v0.z, v1.z, v2.z});
+    auto max_x = std::max({v0.x, v1.x, v2.x});
+    auto max_y = std::max({v0.y, v1.y, v2.y});
+    auto max_z = std::max({v0.z, v1.z, v2.z});
+
+    // Adding a small thickness to each axis to ensure the bounding box is not
+    // degenerate
+    float thickness = 1e-3f;
+
+    BoundingBox bb;
+    bb.min = glm::vec3(min_x - thickness, min_y - thickness, min_z - thickness);
+    bb.max = glm::vec3(max_x, max_y, max_z);
+
+    return bb;
+  }
 };
 
-BoundingBox getAABB(const Triangle &t) {
-  auto v0 = t.v0;
-  auto v1 = t.v1;
-  auto v2 = t.v2;
 
-  auto min_x = std::min({v0.x, v1.x, v2.x});
-  auto min_y = std::min({v0.y, v1.y, v2.y});
-  auto min_z = std::min({v0.z, v1.z, v2.z});
-  auto max_x = std::max({v0.x, v1.x, v2.x});
-  auto max_y = std::max({v0.y, v1.y, v2.y});
-  auto max_z = std::max({v0.z, v1.z, v2.z});
-
-  // Adding a small thickness to each axis to ensure the bounding box is not
-  // degenerate
-  float thickness = 1e-3f;
-
-  BoundingBox bb;
-  bb.min = glm::vec3(min_x - thickness, min_y - thickness, min_z - thickness);
-  bb.max = glm::vec3(max_x, max_y, max_z);
-
-  return bb;
-}
 
 struct BVHNode {
   BoundingBox box;
@@ -101,7 +102,7 @@ public:
     for (int i = start; i < end; ++i) {
       int triangleIndex = triangleIndices[i];
       const Triangle &tri = triangles[triangleIndex];
-      box.expand(getAABB(tri));
+      box.expand(BoundingBox::getAABB(tri));
     }
     node.box = box;
 

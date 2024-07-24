@@ -200,7 +200,7 @@ vec2 RayDirectionToUV(vec3 raydir) {
 
     return vec2(u, v);
 }
-// Function to calculate intersection of a ray with a triangle using Möller–Trumbore intersection algorithm
+// Function to calculate intersection of a ray with a triangle using MllerTrumbore intersection algorithm
 float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, vec3 n1, vec3 n2, bool hasNormal, out vec3 normal)
 {
     vec3 edge1 = v1 - v0;
@@ -337,7 +337,7 @@ HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, out int intersects)
         if (node.left == -1 && node.right == -1) // Check if the node is a leaf node
         {
             // Intersect with all triangles of the node
-            
+
             for (int i = node.start; i < node.end; i++)
             {
                 vec3 normal;
@@ -348,11 +348,9 @@ HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, out int intersects)
                     min_t = t;
                     min_index = idx;
                     is_sphere = false;
-                    
                 }
                 intersects++;
             }
-           
         }
         else
         {
@@ -404,7 +402,6 @@ HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, out int intersects)
         {
             index = -1; // End the loop
         }
-        
     }
     return HitInfo(min_t, min_index, is_sphere);
 }
@@ -434,8 +431,8 @@ void main()
     uv = 2.0 * (uv - 0.5);
     uv.x *= aspect_ratio;
     vec4 prevColor = texture(screenTexture, ouv);
-    int samples = 6;
-    int bounces = 4;
+    int samples = 1;
+    int bounces = 3;
 
     vec3 sky_color = vec3(0.9, 0.8, 0.8);
 
@@ -450,163 +447,197 @@ void main()
         bounces = 2;
     }
     vec3 flight = vec3(0.0);
-    for(int s = 0; s < samples; s++){
-    vec3 jittering = random_vec3() * 0.003;
-    vec3 new_pos = camera_pos;
-    vec3 ray_origin = vec3(0.0 + new_pos.x, 0.0 + new_pos.y, new_pos.z);
-    ray_origin = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_origin;
-    vec3 ray_dir = vec3(uv.x * scale_x, uv.y * scale_x, 1.0f);
-    ray_dir = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_dir;
+    for (int s = 0; s < samples; s++) {
+        vec3 jittering = random_vec3() * 0.003;
+        vec3 new_pos = camera_pos;
+        vec3 ray_origin = vec3(0.0 + new_pos.x, 0.0 + new_pos.y, new_pos.z);
+        ray_origin = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_origin;
+        vec3 ray_dir = vec3(uv.x * scale_x, uv.y * scale_x, 1.0f);
+        ray_dir = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_dir;
 
-    ray_dir += jittering;
-    ray_dir = normalize(ray_dir);
+        ray_dir += jittering;
+        ray_dir = normalize(ray_dir);
 
-    vec3 light = vec3(0.0);
-    vec3 contribution = vec3(1.0);
-    vec3 bbCol = vec3(0.0f);
-    
-    for (int i = 0; i < bounces; i++)
-    {
-        int intersects = 0;
-        HitInfo hi = find_closest(ray_origin, ray_dir, intersects);
-        #define ndebug
-        #ifdef bdebug
-       vec3 color = vec3(0.0);
+        vec3 light = vec3(0.0);
+        vec3 contribution = vec3(1.0);
+        vec3 bbCol = vec3(0.0f);
 
-if (intersects <= 128.0)
-    color = vec3(0.0, 0.0, 0.0);
-else if (intersects <= 191.0)
-    color = mix(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), (intersects - 128.0) / (191.0 - 128.0));
-else if (intersects <= 381.0)
-    color = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 0.9, 0.0), (intersects - 191.0) / (381.0 - 191.0));
-else if (intersects <= 512.0)
-    color = mix(vec3(0.0, 0.9, 0.0), vec3(1.0, 1.0, 0.1), (intersects - 381.0) / (512.0 - 381.0));
-else
-    color = mix(vec3(1.0, 1.0, 0.1), vec3(1.0, 0.0, 0.0), (intersects - 512.0) / (1024.0 - 512.0));
-        //color.rgb = vec3(intersects/(triangle_size*0.1),0,0);\
-        
-        bbCol = vec3(color);
-        if (intersects == 6969)
+        if (bounces == 1)
         {
-            if (delta > 0.00001)
+            // Special case: Directly use albedo
+            int intersects = 0;
+            HitInfo hi = find_closest(ray_origin, ray_dir, intersects);
+            if (hi.index == -1)
             {
-                FragColor = vec4(vec3(1, 0, 0), 1.0);
-                return;
-            }
-            FragColor = vec4(vec3(1, 0, 0) + prevColor.rgb, 1.0);
-        }
-        #endif
-        float t1 = hi.t;
-
-        if (hi.index == -1)
-        {
-            vec2 skybox_uv = RayDirectionToUV(ray_dir);
-            vec3 sky_box = texture(hdri, skybox_uv).rgb;
-            sky_box = clamp(sky_box, 0.0f, 1.0f);
-            light += sky_box * contribution;
-            break;
-        }
-        vec3 hit_point = vec3(0.0f);
-        Material mat;
-        vec3 normal;
-        bool front_face = true;
-        if (hi.is_sphere)
-        {
-            Sphere sh = spheres[hi.index];
-            mat = materials[sh.matIndex];
-            hit_point = ray_origin + ray_dir * t1;
-            normal = normalize(hit_point - sh.center);
-        }
-        else
-        {
-            Triangle th = triangle[hi.index];
-            mat = materials[th.matIndex];
-
-            hit_point = ray_origin + ray_dir * t1;
-            normal;
-            intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal);
-        }
-        vec3 offset = normal * 0.01;
-        ray_origin = hit_point + offset;
-        vec3 copy = ray_dir;
-        vec3 de;
-        {
-            float eta = 1.8 * (1 - mat.metallic);
-            float eta_fraction = 1.0 / eta;
-
-            float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
-            f0 = f0 * f0;
-            float r0 = f0;
-            vec3 nwo = ray_dir;
-            float cos_theta = -dot(normal, nwo);
-            float reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
-            float rand_val = random();
-            vec3 diffuse = cosine_weighted_hemisphere(normal);
-            vec3 dielctic = diffuse;
-            de = diffuse;
-            if (rand_val * 1.2 < reflectance)
-            {
-                vec3 rdir = reflect(nwo, normal);
-                dielctic = mix(rdir, diffuse, mat.roughness);
-                de = dielctic;
-            }
-        }
-
-        vec3 metal_dir = normalize(mix(reflect(ray_dir, normal), cosine_weighted_hemisphere(normal), mat.roughness));
-        ray_dir = mix(de, metal_dir, mat.metallic);
-        contribution *= mix(contribution, mat.albedo, 1);
-        light += get_emission(mat) * contribution;
-        if (dot(-normal, ray_dir) > 0.0)
-        {
-            front_face = false;
-            normal = -normal;
-        }
-        else
-            front_face = true;
-
-        if (abs(mat.eta) > 0.01)
-        {
-            ray_dir = copy;
-            float eta = mat.eta;
-            float eta_fraction = 1.0 / eta;
-
-            float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
-            f0 = f0 * f0;
-
-            if (!front_face)
-                eta_fraction = eta;
-            vec3 nwo = ray_dir;
-            float cos_theta = -dot(normal, nwo);
-            float sin_theta_2 = 1.0 - (eta_fraction * eta_fraction) * (1.0 - cos_theta * cos_theta);
-            bool cannot_refract = sin_theta_2 <= 0.0;
-
-            float r0 = f0;
-            float reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
-            float rand_val = random();
-
-            vec3 dir;
-            vec3 origin;
-
-            if (!cannot_refract && rand_val * 1.2 > reflectance)
-            {
-                origin = hit_point - normal * 0.01;
-                vec3 perp = nwo * cos_theta;
-                vec3 para = (eta_fraction * cos_theta - sqrt(sin_theta_2)) * normal;
-                dir = perp + para;
+                vec2 skybox_uv = RayDirectionToUV(ray_dir);
+                vec3 sky_box = texture(hdri, skybox_uv).rgb;
+                sky_box = clamp(sky_box, 0.0f, 1.0f);
+                light = sky_box;
             }
             else
             {
-                origin = hit_point + normal * 0.01;
-                dir = reflect(nwo, normal);
+                Material mat;
+                vec3 hit_point = vec3(0.0f);
+                vec3 normal;
+                if (hi.is_sphere)
+                {
+                    Sphere sh = spheres[hi.index];
+                    mat = materials[sh.matIndex];
+                    hit_point = ray_origin + ray_dir * hi.t;
+                    normal = normalize(hit_point - sh.center);
+                }
+                else
+                {
+                    Triangle th = triangle[hi.index];
+                    mat = materials[th.matIndex];
+                    hit_point = ray_origin + ray_dir * hi.t;
+                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal);
+                }
+                light = mat.albedo;
             }
+            fcolor += mix(light, vec3(1.0), 0.0);
+        }
+        else
+        {
+            for (int i = 0; i < bounces; i++)
+            {
+                int intersects = 0;
+                HitInfo hi = find_closest(ray_origin, ray_dir, intersects);
+                #define ndebug
+                #ifdef bdebug
+                vec3 color = vec3(0.0);
 
-            ray_dir = normalize(dir);
-            ray_origin = origin;
+                if (intersects <= 128.0)
+                    color = vec3(0.0, 0.0, 0.0);
+                else if (intersects <= 191.0)
+                    color = mix(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), (intersects - 128.0) / (191.0 - 128.0));
+                else if (intersects <= 381.0)
+                    color = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 0.9, 0.0), (intersects - 191.0) / (381.0 - 191.0));
+                else if (intersects <= 512.0)
+                    color = mix(vec3(0.0, 0.9, 0.0), vec3(1.0, 1.0, 0.1), (intersects - 381.0) / (512.0 - 381.0));
+                else
+                    color = mix(vec3(1.0, 1.0, 0.1), vec3(1.0, 0.0, 0.0), (intersects - 512.0) / (1024.0 - 512.0));
+                bbCol = vec3(color);
+                if (intersects == 6969)
+                {
+                    if (delta > 0.00001)
+                    {
+                        FragColor = vec4(vec3(1, 0, 0), 1.0);
+                        return;
+                    }
+                    FragColor = vec4(vec3(1, 0, 0) + prevColor.rgb, 1.0);
+                }
+                #endif
+                float t1 = hi.t;
+
+                if (hi.index == -1)
+                {
+                    vec2 skybox_uv = RayDirectionToUV(ray_dir);
+                    vec3 sky_box = texture(hdri, skybox_uv).rgb;
+                    sky_box = clamp(sky_box, 0.0f, 1.0f);
+                    light += sky_box * contribution;
+                    break;
+                }
+                vec3 hit_point = vec3(0.0f);
+                Material mat;
+                vec3 normal;
+                bool front_face = true;
+                if (hi.is_sphere)
+                {
+                    Sphere sh = spheres[hi.index];
+                    mat = materials[sh.matIndex];
+                    hit_point = ray_origin + ray_dir * t1;
+                    normal = normalize(hit_point - sh.center);
+                }
+                else
+                {
+                    Triangle th = triangle[hi.index];
+                    mat = materials[th.matIndex];
+
+                    hit_point = ray_origin + ray_dir * t1;
+                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal);
+                }
+                vec3 offset = normal * 0.01;
+                ray_origin = hit_point + offset;
+                vec3 copy = ray_dir;
+                vec3 de;
+                {
+                    float eta = 1.8 * (1 - mat.metallic);
+                    float eta_fraction = 1.0 / eta;
+
+                    float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
+                    f0 = f0 * f0;
+                    float r0 = f0;
+                    vec3 nwo = ray_dir;
+                    float cos_theta = -dot(normal, nwo);
+                    float reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
+                    float rand_val = random();
+                    vec3 diffuse = cosine_weighted_hemisphere(normal);
+                    vec3 dielctic = diffuse;
+                    de = diffuse;
+                    if (rand_val * 1.2 < reflectance)
+                    {
+                        vec3 rdir = reflect(nwo, normal);
+                        dielctic = mix(rdir, diffuse, mat.roughness);
+                        de = dielctic;
+                    }
+                }
+
+                vec3 metal_dir = normalize(mix(reflect(ray_dir, normal), cosine_weighted_hemisphere(normal), mat.roughness));
+                ray_dir = mix(de, metal_dir, mat.metallic);
+                contribution *= mix(contribution, mat.albedo, 1);
+                light += get_emission(mat) * contribution;
+                if (dot(-normal, ray_dir) > 0.0)
+                {
+                    front_face = false;
+                    normal = -normal;
+                }
+                else
+                    front_face = true;
+
+                if (abs(mat.eta) > 0.01)
+                {
+                    ray_dir = copy;
+                    float eta = mat.eta;
+                    float eta_fraction = 1.0 / eta;
+
+                    float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
+                    f0 = f0 * f0;
+
+                    if (!front_face)
+                        eta_fraction = eta;
+                    vec3 nwo = ray_dir;
+                    float cos_theta = -dot(normal, nwo);
+                    float sin_theta_2 = 1.0 - (eta_fraction * eta_fraction) * (1.0 - cos_theta * cos_theta);
+                    bool cannot_refract = sin_theta_2 <= 0.0;
+
+                    float r0 = f0;
+                    float reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
+                    float rand_val = random();
+
+                    vec3 dir;
+                    vec3 origin;
+
+                    if (!cannot_refract && rand_val * 1.2 > reflectance)
+                    {
+                        origin = hit_point - normal * 0.01;
+                        vec3 perp = nwo * cos_theta;
+                        vec3 para = (eta_fraction * cos_theta - sqrt(sin_theta_2)) * normal;
+                        dir = perp + para;
+                    }
+                    else
+                    {
+                        origin = hit_point + normal * 0.01;
+                        dir = reflect(nwo, normal);
+                    }
+
+                    ray_dir = normalize(dir);
+                    ray_origin = origin;
+                }
+            }
+            fcolor += mix(light / float(samples), vec3(1.0), 0.0);
         }
     }
-    flight += light;
-    }
-    fcolor += mix(flight/float(samples),vec3(1.0), 0.0);
 
     if (iTime > 1.0f)
     {
@@ -615,6 +646,6 @@ else
             FragColor = vec4(fcolor, 1.0);
             return;
         }
-        FragColor = vec4(fcolor , 1.0);
+        FragColor = vec4(fcolor, 1.0);
     }
 }

@@ -45,12 +45,3 @@ target_link_libraries(PathTracingRenderer
     # Example libraries, replace with actual libraries you are using
     glfw
 )
-
-# Set assets directory as a custom property
-set(ASSETS_DIR "${PROJECT_SOURCE_DIR}/assets")
-
-# Copy assets directory to the build directory
-add_custom_command(TARGET PathTracingRenderer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${ASSETS_DIR} $<TARGET_FILE_DIR:PathTracingRenderer>/assets
-)

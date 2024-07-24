@@ -1,8 +1,9 @@
 #pragma once
+
 #include"primitives.h"
 #include "modelLoader.h"
 #include "imageLoader.h"
-Scene testSceneBox()
+inline Scene testSceneBox()
 {
 	using namespace glm;
 
@@ -105,7 +106,7 @@ Scene testSceneBox()
 	// Return the Scene
 	return scene;
 }
-Scene testSceneModel()
+inline Scene testSceneModel()
 {
 	using namespace glm;
 	auto triangles = loadFromObj("assets/coco.obj");
@@ -143,7 +144,7 @@ Scene testSceneModel()
 	// Return the Scene
 	return scene;
 }
-Scene testSceneModel2()
+inline Scene testSceneModel2()
 {
 	using namespace glm;
 	auto triangles = loadFromObj("assets/coca.obj");

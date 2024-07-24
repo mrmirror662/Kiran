@@ -83,10 +83,38 @@ CMakeFiles/PathTracingRenderer.dir/src/imageLoader.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/PathTracingRenderer.dir/src/imageLoader.cpp.s"
 	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/barath/dev/kiran/rtgl/src/imageLoader.cpp -o CMakeFiles/PathTracingRenderer.dir/src/imageLoader.cpp.s
 
+CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o: CMakeFiles/PathTracingRenderer.dir/flags.make
+CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o: src/modelLoader.cpp
+CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o"
+	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o -MF CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o.d -o CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o -c /home/barath/dev/kiran/rtgl/src/modelLoader.cpp
+
+CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.i"
+	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/barath/dev/kiran/rtgl/src/modelLoader.cpp > CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.i
+
+CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.s"
+	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/barath/dev/kiran/rtgl/src/modelLoader.cpp -o CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.s
+
+CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o: CMakeFiles/PathTracingRenderer.dir/flags.make
+CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o: src/renderer.cpp
+CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o"
+	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o -MF CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o.d -o CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o -c /home/barath/dev/kiran/rtgl/src/renderer.cpp
+
+CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.i"
+	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/barath/dev/kiran/rtgl/src/renderer.cpp > CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.i
+
+CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.s"
+	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/barath/dev/kiran/rtgl/src/renderer.cpp -o CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.s
+
 CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o: CMakeFiles/PathTracingRenderer.dir/flags.make
 CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o: src/rtgl.cpp
 CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o"
 	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o -MF CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o.d -o CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o -c /home/barath/dev/kiran/rtgl/src/rtgl.cpp
 
 CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.i: cmake_force
@@ -100,7 +128,7 @@ CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.s: cmake_force
 CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o: CMakeFiles/PathTracingRenderer.dir/flags.make
 CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o: src/shader.cpp
 CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o"
 	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o -MF CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o.d -o CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o -c /home/barath/dev/kiran/rtgl/src/shader.cpp
 
 CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.i: cmake_force
@@ -114,7 +142,7 @@ CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.s: cmake_force
 CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o: CMakeFiles/PathTracingRenderer.dir/flags.make
 CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o: src/texture.cpp
 CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o"
 	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o -MF CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o.d -o CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o -c /home/barath/dev/kiran/rtgl/src/texture.cpp
 
 CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.i: cmake_force
@@ -128,7 +156,7 @@ CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.s: cmake_force
 CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o: CMakeFiles/PathTracingRenderer.dir/flags.make
 CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o: deps/Glad/src/glad.c
 CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o"
 	/sbin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o -MF CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o.d -o CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.o -c /home/barath/dev/kiran/rtgl/deps/Glad/src/glad.c
 
 CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.i: cmake_force
@@ -142,7 +170,7 @@ CMakeFiles/PathTracingRenderer.dir/deps/Glad/src/glad.c.s: cmake_force
 CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o: CMakeFiles/PathTracingRenderer.dir/flags.make
 CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o: deps/glm/detail/glm.cpp
 CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o"
 	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o -MF CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o.d -o CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.o -c /home/barath/dev/kiran/rtgl/deps/glm/detail/glm.cpp
 
 CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.i: cmake_force
@@ -156,7 +184,7 @@ CMakeFiles/PathTracingRenderer.dir/deps/glm/detail/glm.cpp.s: cmake_force
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o: CMakeFiles/PathTracingRenderer.dir/flags.make
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o: deps/tinyEXR/miniz.c
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o"
 	/sbin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o -MF CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o.d -o CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o -c /home/barath/dev/kiran/rtgl/deps/tinyEXR/miniz.c
 
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.i: cmake_force
@@ -170,7 +198,7 @@ CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.s: cmake_force
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o: CMakeFiles/PathTracingRenderer.dir/flags.make
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o: deps/tinyEXR/tinyexr.cpp
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o: CMakeFiles/PathTracingRenderer.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o"
 	/sbin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o -MF CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o.d -o CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o -c /home/barath/dev/kiran/rtgl/deps/tinyEXR/tinyexr.cpp
 
 CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.i: cmake_force
@@ -184,6 +212,8 @@ CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.s: cmake_force
 # Object files for target PathTracingRenderer
 PathTracingRenderer_OBJECTS = \
 "CMakeFiles/PathTracingRenderer.dir/src/imageLoader.cpp.o" \
+"CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o" \
+"CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o" \
 "CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o" \
 "CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o" \
 "CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o" \
@@ -196,6 +226,8 @@ PathTracingRenderer_OBJECTS = \
 PathTracingRenderer_EXTERNAL_OBJECTS =
 
 PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/src/imageLoader.cpp.o
+PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/src/modelLoader.cpp.o
+PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/src/renderer.cpp.o
 PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/src/rtgl.cpp.o
 PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/src/shader.cpp.o
 PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/src/texture.cpp.o
@@ -205,9 +237,8 @@ PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/miniz.c.o
 PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/deps/tinyEXR/tinyexr.cpp.o
 PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/build.make
 PathTracingRenderer: CMakeFiles/PathTracingRenderer.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Linking CXX executable PathTracingRenderer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/barath/dev/kiran/rtgl/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Linking CXX executable PathTracingRenderer"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/PathTracingRenderer.dir/link.txt --verbose=$(VERBOSE)
-	/usr/bin/cmake -E copy_directory /home/barath/dev/kiran/rtgl/assets /home/barath/dev/kiran/rtgl/assets
 
 # Rule to build all files generated by this target.
 CMakeFiles/PathTracingRenderer.dir/build: PathTracingRenderer

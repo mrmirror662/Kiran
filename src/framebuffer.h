@@ -1,6 +1,6 @@
 #pragma once
+
 #include "texture.h"
-#include <glad/glad.h>
 class FrameBuffer {
   unsigned int id;
 

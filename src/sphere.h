@@ -1,4 +1,5 @@
 #pragma once
+
 #include <glm/glm.hpp>
 using namespace glm;
 
@@ -11,10 +12,7 @@ struct Material
 	float emission_power;
 	float eta;
 };
-vec3 get_emission(Material m)
-{
-	return m.emission_color * m.emission_power;
-}
+
 struct Sphere
 {
 	alignas(16)vec3 center;
