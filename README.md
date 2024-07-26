@@ -1,24 +1,26 @@
+
 # Kiran
+
 A simple path tracer written in OpenGL and c++
 
+## Building
+### Dependency
+To build Kiran , we need ```cmake```, ```glfw```.
+### Build Process
+```bash
+  git clone https://github.com/mrmirror662/Kiran
+```
+```bash
+  cd Kiran
+  cmake ..
+  make 
+```
+## Running the demo
+from the root dir, run 
+```bash
+ ./build/PathTracingRenderer
+```
 
-# building
-using ```mkdir build``` create a build folder  
-  
-```cd build```
-  
-run:
-  
-```cmake ..```  
-  
-``` make```    
-
-# running the demo  
-  
-In the root dir  
-
-```./build/PathTracingRenderer```
-  
 **note make sure it is using your dedicated/desired GPU**
 
 # Some renders :)
