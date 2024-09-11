@@ -1,7 +1,7 @@
 
 # Kiran
 
-A simple path tracer written in OpenGL and c++
+A simple path tracer written in OpenGL and c++.
 
 ## Building
 ### Dependency
