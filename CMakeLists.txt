@@ -19,7 +19,6 @@ file(GLOB_RECURSE DEPS_SOURCES
     "${PROJECT_SOURCE_DIR}/deps/**/*.cpp"
     "${PROJECT_SOURCE_DIR}/deps/**/*.c"
     "${PROJECT_SOURCE_DIR}/deps/**/*.h"
-
 )
 
 # Combine all source files
@@ -35,13 +34,47 @@ target_include_directories(PathTracingRenderer PUBLIC
     ${PROJECT_SOURCE_DIR}/deps/Glad/include/
 )
 
-# Link directories (if you have any precompiled libraries in the deps directory)
-target_link_directories(PathTracingRenderer PUBLIC
-    ${PROJECT_SOURCE_DIR}/deps/lib
-)
 
+if (WIN32)
+    # Add GLFW include directory and link directory only for Windows
+    target_include_directories(PathTracingRenderer PUBLIC
+        ${PROJECT_SOURCE_DIR}/deps/GLFW/
+    )
+
+    target_link_directories(PathTracingRenderer PUBLIC
+        ${PROJECT_SOURCE_DIR}/deps/GLFW/
+    )
+endif()
+if (MSVC)
+    # Use the Multi-threaded DLL (/MD) or Multi-threaded Debug DLL (/MDd)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 # Link libraries (specify the libraries you need here)
 target_link_libraries(PathTracingRenderer
-    # Example libraries, replace with actual libraries you are using
-    glfw
+    glfw3
 )
+
+# Set platform-specific configurations
+if (WIN32)
+    # For Windows-specific configurations
+    set(CMAKE_GENERATOR_PLATFORM "x64" CACHE STRING "Target platform")
+
+    # Specify additional dependencies for Windows if needed
+    #target_link_libraries(PathTracingRenderer
+   #     opengl32
+   # )
+
+    # Enable solution folder organization (optional, requires newer CMake)
+    set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+endif()
+
+# Export Visual Studio solution when on Windows
+if (WIN32)
+    message(STATUS "Generating Visual Studio solution for Windows")
+    set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "Configs" FORCE)
+endif()
+
+# Custom output paths (optional, for organized builds)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)

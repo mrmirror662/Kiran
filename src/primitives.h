@@ -8,11 +8,13 @@ struct Triangle
 	alignas(16)glm::vec3 v1;
 	//not 16
 	alignas(16)glm::vec3 v2; // vertices
-	int matIndex;
+	alignas(4) int matIndex;
 	alignas(16)glm::vec3 n0;
 	alignas(16)glm::vec3 n1;
 	alignas(16)glm::vec3 n2;
 	bool hasNormal = false;
+	bool hasTexture = false;
+	alignas (8) uint64_t textureHandle = 0;
 };
 
 struct Sphere

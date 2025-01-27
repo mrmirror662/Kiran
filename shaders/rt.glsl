@@ -1,5 +1,6 @@
-#version 430
-
+#version 460
+#extension GL_ARB_bindless_texture : require
+#extension GL_ARB_gpu_shader_int64 : enable
 uniform float iTime;
 uniform vec2 iResolution;
 uniform int iFrame;
@@ -124,6 +125,8 @@ struct Triangle
     vec3 n1;
     vec3 n2;
     bool hasNormal;
+    bool hasTexture;
+    sampler2D textureHandle;
 };
 
 struct Sphere
@@ -490,6 +493,7 @@ void main()
                 {
                     Triangle th = triangle[hi.index];
                     mat = materials[th.matIndex];
+
                     hit_point = ray_origin + ray_dir * hi.t;
                     intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal);
                 }
@@ -553,6 +557,11 @@ void main()
                 {
                     Triangle th = triangle[hi.index];
                     mat = materials[th.matIndex];
+                    if (th.hasTexture) {
+                        //u64 a = 4294969856u64;
+                        vec3 handleColor = texture(sampler2D(th.textureHandle), vec2(0.5, 0.5)).rgb;
+                        mat.albedo = handleColor;
+                    }
 
                     hit_point = ray_origin + ray_dir * t1;
                     intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal);
@@ -641,11 +650,11 @@ void main()
 
     if (iTime > 1.0f)
     {
-        if (delta > 0.00001)
+        if (delta > 0.00001 || iFrame == 1)
         {
             FragColor = vec4(fcolor, 1.0);
             return;
         }
-        FragColor = vec4(fcolor, 1.0);
+        FragColor = prevColor + vec4(fcolor, 1.0);
     }
 }
