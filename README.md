@@ -24,6 +24,7 @@ from the root dir, run
 **note: make sure it is using your dedicated/desired GPU**
 
 # Some renders :)
+![CocaCola](readme/sp1.png)
 
 ![Car](readme/reflection.png)
 
