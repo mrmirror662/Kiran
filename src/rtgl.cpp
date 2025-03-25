@@ -20,7 +20,7 @@ int main() {
 	}
 	glfwSwapInterval(1);
 
-	Scene scene = testSceneBox();
+	Scene scene = testSceneModel();
 	BVH bvh(scene.triangles, 4);
 
 	Renderer renderer(window, scene, bvh);

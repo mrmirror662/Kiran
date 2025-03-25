@@ -55,26 +55,38 @@ struct temptex
 };
 static temptex testTexture()
 {
-	const size_t textureSize = 32 * 32 * 3;
+	const int width = 512;
+	const int height = 512;
+	const size_t textureSize = width * height * 3; // 3 channels (RGB)
 	unsigned char textureData[textureSize];
-	for (int j = 0; j < textureSize; ++j) {
-		textureData[j] = unsigned char(255);
+
+	// Generate a checkerboard pattern
+	for (int y = 0; y < height; ++y) {
+		for (int x = 0; x < width; ++x) {
+			// Determine the color of the current pixel
+			bool isWhite = ((x / 10) % 2 == (y / 10) % 2); // 4x4 tiles
+			unsigned char color = isWhite ? 255 : 0;    // White or black
+
+			// Set the pixel's RGB values
+			int index = (y * width + x) * 3;
+			textureData[index + 0] = isWhite ? color : 50; // Red
+			textureData[index + 1] = isWhite ? color : 50; // Green
+			textureData[index + 2] = isWhite ? color : 50; // Blue
+		}
 	}
 
 	GLuint texture;
 	glCreateTextures(GL_TEXTURE_2D, 1, &texture);
-	glTextureStorage2D(texture, 1, GL_RGB8, 32, 32);
-	// Set texture parameters to avoid incomplete texture
-	glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTextureParameteri(texture, GL_TEXTURE_WRAP_S, GL_REPEAT);
-	glTextureParameteri(texture, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	glTextureStorage2D(texture, 1, GL_RGB8, width, height);
+
+
+
+	// Upload the checkerboard pattern to the texture
 	glTextureSubImage2D(
 		texture,
-		// level, xoffset, yoffset, width, height
-		0, 0, 0, 32, 32,
+		0, 0, 0, width, height, // level, xoffset, yoffset, width, height
 		GL_RGB, GL_UNSIGNED_BYTE,
-		(const void*)&textureData[0]);
+		(const void*)textureData);
 
 	// Retrieve the texture handle after we finish creating the texture
 	const uint64_t handle = glGetTextureHandleARB(texture);
@@ -84,7 +96,30 @@ static temptex testTexture()
 	}
 
 	return { handle };
+}
+static BindlessTexture testBindlessTex()
+{
+	const int width = 512;
+	const int height = 512;
+	const size_t textureSize = width * height * 3; // 3 channels (RGB)
+	std::vector<uint8_t> textureData(textureSize);
 
+	// Generate a checkerboard pattern
+	for (int y = 0; y < height; ++y) {
+		for (int x = 0; x < width; ++x) {
+			// Determine the color of the current pixel
+			bool isWhite = ((x / 10) % 2 == (y / 10) % 2); // 4x4 tiles
+			unsigned char color = isWhite ? 255 : 0;    // White or black
+
+			// Set the pixel's RGB values
+			int index = (y * width + x) * 3;
+			textureData[index + 0] = isWhite ? color : 50; // Red
+			textureData[index + 1] = isWhite ? color : 50; // Green
+			textureData[index + 2] = isWhite ? color : 50; // Blue
+		}
+	}
+	BindlessTexture test(width, height, 3, textureData);
+	return test;
 }
 Renderer::Renderer(GLFWwindow* window, Scene& scene, BVH& bvh)
 	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), cam({ 0, 0, -1.0f }), scene(scene), bvh(bvh) {
@@ -110,19 +145,16 @@ void Renderer::init() {
 	setupShaders();
 	setupTextures();
 	setupFramebuffers();
-	auto texInfo = testTexture();
-	std::cout << texInfo.textureHandle << '\n';
-	glMakeTextureHandleResidentARB(texInfo.textureHandle);
 
-	if (!glIsTextureHandleResidentARB(texInfo.textureHandle)) {
-		std::cout << "Texture handle is not resident!" << std::endl;
-	}
-	tt = texInfo;
-	for (auto& t : scene.triangles)
+
+
+	std::vector<BindlessTexture> blCMap;
+
+	for (auto& t : scene.colorMaps)
 	{
-		t.textureHandle = texInfo.textureHandle;
-		t.hasTexture = true;
+		blCMap.emplace_back(t.width, t.height, t.channel, t.buffer);
 	}
+
 	bvh = BVH(scene.triangles, 4);
 
 	triangle_data.bind();
@@ -145,11 +177,23 @@ void Renderer::init() {
 	indices.fillData(bvh.triangleIndices);
 	indices.bindBase(10);
 
+	std::vector<uint64_t> handles;
+	for (auto& blT : blCMap) {
+		blT.MakeResident();
+		handles.push_back(blT.GetHandle());
+	}
+	ShaderStorage<uint64_t> textureHandles;
+	textureHandles.bind();
+	textureHandles.fillData(handles);
+	textureHandles.bindBase(11);
+
+
 	Texture::setActiveUnit(3);
 	Texture env(scene.hdr.width, scene.hdr.height, scene.hdr.data);
 	rt_shader.bind();
 	rt_shader.initUniForm("hdri");
 	rt_shader.setUniform("hdri", 3);
+
 	Texture::setActiveUnit(1);
 }
 
@@ -177,7 +221,6 @@ void Renderer::renderScene(float currentTime, float dt) {
 		frame = 0;
 	}
 
-	std::cout << "Texture resident = " << (bool)glIsTextureHandleResidentARB(tt.textureHandle) << std::endl;
 
 	fbo[current].bind();
 	texture[1 - current].bind();

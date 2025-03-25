@@ -12,7 +12,6 @@ uniform float delta;
 uniform int triangle_size;
 uniform int sphere_size;
 uniform int bvh_size;
-
 in vec2 fragCoord;
 out vec4 FragColor;
 in vec4 gl_FragCoord;
@@ -124,9 +123,12 @@ struct Triangle
     vec3 n0;
     vec3 n1;
     vec3 n2;
+    vec2 uv0;
+    vec2 uv1;
+    vec2 uv2;
     bool hasNormal;
     bool hasTexture;
-    sampler2D textureHandle;
+    uint colourMapIndex;
 };
 
 struct Sphere
@@ -182,6 +184,11 @@ layout(binding = 10, std430) buffer ssbo5
 {
     int indices[];
 };
+layout(binding = 11, std430) buffer ssbo6
+{
+    sampler2D textureHandles[];
+};
+
 vec3 get_emission(Material m)
 {
     return m.emission_color * m.emission_power;
@@ -204,7 +211,7 @@ vec2 RayDirectionToUV(vec3 raydir) {
     return vec2(u, v);
 }
 // Function to calculate intersection of a ray with a triangle using MllerTrumbore intersection algorithm
-float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, vec3 n1, vec3 n2, bool hasNormal, out vec3 normal)
+float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, vec3 n1, vec3 n2, bool hasNormal, out vec3 normal, vec2 uv0, vec2 uv1, vec2 uv2, bool hasTexture, out vec2 interpolatedUv)
 {
     vec3 edge1 = v1 - v0;
     vec3 edge2 = v2 - v0;
@@ -232,11 +239,18 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
     {
         // Compute the face normal
         vec3 faceNormal = normalize(cross(edge1, edge2));
-
+        float w = 1.0 - u - v;
+        if (hasTexture)
+        {
+            interpolatedUv = u * uv1 + v * uv2 + w * uv0;
+        }
+        else
+        {
+            interpolatedUv = vec2(0, 0);
+        }
         if (hasNormal)
         {
             // Compute barycentric coordinate for w
-            float w = 1.0 - u - v;
 
             // Interpolate the normal using barycentric coordinates
             normal = normalize(u * n1 + v * n2 + w * n0);
@@ -344,8 +358,9 @@ HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, out int intersects)
             for (int i = node.start; i < node.end; i++)
             {
                 vec3 normal;
+                vec2 interpolatedUv;
                 int idx = indices[i];
-                float t = intersectTriangle(ray_origin, ray_dir, triangle[idx].v0, triangle[idx].v1, triangle[idx].v2, triangle[idx].n0, triangle[idx].n1, triangle[idx].n2, triangle[idx].hasNormal, normal);
+                float t = intersectTriangle(ray_origin, ray_dir, triangle[idx].v0, triangle[idx].v1, triangle[idx].v2, triangle[idx].n0, triangle[idx].n1, triangle[idx].n2, triangle[idx].hasNormal, normal, triangle[idx].uv0, triangle[idx].uv1, triangle[idx].uv2, triangle[idx].hasTexture, interpolatedUv);
                 if (t > 0.0 && t < min_t)
                 {
                     min_t = t;
@@ -435,7 +450,7 @@ void main()
     uv.x *= aspect_ratio;
     vec4 prevColor = texture(screenTexture, ouv);
     int samples = 1;
-    int bounces = 3;
+    int bounces = 4;
 
     vec3 sky_color = vec3(0.9, 0.8, 0.8);
 
@@ -447,7 +462,7 @@ void main()
     if (delta > 0.00001)
     {
         samples = 1;
-        bounces = 2;
+        bounces = 3;
     }
     vec3 flight = vec3(0.0);
     for (int s = 0; s < samples; s++) {
@@ -495,7 +510,8 @@ void main()
                     mat = materials[th.matIndex];
 
                     hit_point = ray_origin + ray_dir * hi.t;
-                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal);
+                    vec2 interpolatedUv = vec2(0.0);
+                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, interpolatedUv);
                 }
                 light = mat.albedo;
             }
@@ -557,14 +573,15 @@ void main()
                 {
                     Triangle th = triangle[hi.index];
                     mat = materials[th.matIndex];
-                    if (th.hasTexture) {
-                        //u64 a = 4294969856u64;
-                        vec3 handleColor = texture(sampler2D(th.textureHandle), vec2(0.5, 0.5)).rgb;
-                        mat.albedo = handleColor;
-                    }
 
                     hit_point = ray_origin + ray_dir * t1;
-                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal);
+                    vec2 interpolatedUv = vec2(0.0);
+                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, interpolatedUv);
+                    if (th.hasTexture) {
+                        vec3 texColor = texture(sampler2D(textureHandles[th.colourMapIndex]), interpolatedUv).rgb;
+                        mat.albedo = texColor;
+                    }
+                    // mat.albedo = th.hasTexture == true ? vec3(1, 0, 0) : vec3(0, 1, 0);
                 }
                 vec3 offset = normal * 0.01;
                 ray_origin = hit_point + offset;

@@ -6,7 +6,12 @@ inline glm::vec3 objtoglm(const objl::Vector3& in)
 	glm::vec3 out = { in.X,in.Y,in.Z };
 	return out;
 }
-inline std::vector<Triangle> loadFromObj(const std::string meshPath)
+inline glm::vec2 objtoglm(const objl::Vector2& in)
+{
+	glm::vec2 out = { in.X,in.Y };
+	return out;
+}
+std::vector<Triangle> loadFromObj(const std::string meshPath)
 {
 	std::vector<Triangle> ts;
 	// Initialize Loader
@@ -53,7 +58,6 @@ inline std::vector<Triangle> loadFromObj(const std::string meshPath)
 			for (int j = 0; j < curMesh.Indices.size() - 3; j += 3)
 			{
 				auto idx1 = curMesh.Indices[j], idx2 = curMesh.Indices[j + 1], idx3 = curMesh.Indices[j + 2];
-
 				file << "T" << j / 3 << ": " << curMesh.Indices[j] << ", " << curMesh.Indices[j + 1] << ", " << curMesh.Indices[j + 2] << "\n";
 				Triangle t = {
 				objtoglm(curMesh.Vertices[idx1].Position),
@@ -62,6 +66,9 @@ inline std::vector<Triangle> loadFromObj(const std::string meshPath)
 				objtoglm(curMesh.Vertices[idx1].Normal),
 				objtoglm(curMesh.Vertices[idx2].Normal),
 				objtoglm(curMesh.Vertices[idx3].Normal),
+				objtoglm(curMesh.Vertices[idx1].TextureCoordinate),
+				objtoglm(curMesh.Vertices[idx2].TextureCoordinate),
+				objtoglm(curMesh.Vertices[idx3].TextureCoordinate),
 				true
 				};
 				ts.push_back(t);

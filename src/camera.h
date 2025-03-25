@@ -21,7 +21,7 @@ public:
 	bool onUpdate(WindowHandler* window, float dt) {
 
 		glm::vec4 offset{ 0.0f };
-		float speed = 1.0f;
+		float speed = 10.0f;
 		bool moved = false; // Tracks if the camera moved
 
 		// Move forward and backward

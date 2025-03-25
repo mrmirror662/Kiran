@@ -12,9 +12,42 @@ struct Triangle
 	alignas(16)glm::vec3 n0;
 	alignas(16)glm::vec3 n1;
 	alignas(16)glm::vec3 n2;
-	bool hasNormal = false;
-	bool hasTexture = false;
-	alignas (8) uint64_t textureHandle = 0;
+	alignas(8)glm::vec2 uv0;
+	alignas(8)glm::vec2 uv1;
+	alignas(8)glm::vec2 uv2;
+	alignas(4)uint32_t hasNormal = false;
+	alignas(4)uint32_t hasTexture = false;
+	alignas(4)uint32_t colorMapIndex = -1;
+
+
+	static void AssignMaterialIndexForMesh(std::vector<Triangle>& mesh, uint32_t index)
+	{
+		for (auto& t : mesh)
+		{
+			t.matIndex = index;
+		}
+	}
+	static void AssignColorIndexForMesh(std::vector<Triangle>& mesh, uint32_t index)
+	{
+		for (auto& t : mesh)
+		{
+			t.colorMapIndex = index;
+		}
+	}
+	static void ActivateTextureForMesh(std::vector<Triangle>& mesh)
+	{
+		for (auto& t : mesh)
+		{
+			t.hasTexture = true;
+		}
+	}
+	static void DeactivateTextureForMesh(std::vector<Triangle>& mesh)
+	{
+		for (auto& t : mesh)
+		{
+			t.hasTexture = false;
+		}
+	}
 };
 
 struct Sphere
@@ -41,5 +74,6 @@ struct Scene
 	std::vector<Triangle> triangles;
 	std::vector<Sphere> spheres;
 	std::vector<Material> mats;
+	std::vector<Image> colorMaps;
 	HDRI hdr;
 };

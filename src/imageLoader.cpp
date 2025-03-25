@@ -1,9 +1,12 @@
 #include "imageLoader.h"
 #include <vector>
 #include <stdexcept>
-
+#include<iostream>
 
 #include <tinyEXR/tinyexr.h>
+#define STB_IMAGE_IMPLEMENTATION    
+
+#include <STB/stb_image.h>
 
 HDRI loadHDRI(const std::string& path)
 {
@@ -58,4 +61,26 @@ HDRI loadHDRI(const std::string& path)
 	free(out);  // Free the loaded EXR data
 
 	return hdri;
+}
+Image LoadImage(const std::string& path)
+{
+	int width, height, channels;
+	unsigned char* data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+
+	Image image;
+	if (data) {
+		// Copy image data to vector buffer
+		image.buffer.assign(data, data + (width * height * channels));
+		image.width = width;
+		image.height = height;
+		image.channel = channels;
+
+		// Free STB image memory
+		stbi_image_free(data);
+	}
+	else {
+		std::cout << "Failed to load image: " << stbi_failure_reason() << std::endl;
+	}
+
+	return image;
 }

@@ -28,6 +28,8 @@ public:
 	void setUniform(const std::string& name, int v1, int v2);
 	void setUniform(const std::string& name, int v1, int v2, int v3);
 
+	void setUniform(const std::string& name, uint64_t val);
+
 	~Shader();
 
 };

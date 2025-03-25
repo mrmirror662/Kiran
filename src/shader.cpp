@@ -143,6 +143,12 @@ void Shader::setUniform(const std::string& name, int v1, int v2, int v3)
 	glUniform3i(uniform_location, v1, v2, v3);
 }
 
+void Shader::setUniform(const std::string& name, uint64_t v1)
+{
+	int uniform_location = getUniformLocation(name);
+	glUniformHandleui64ARB(uniform_location, v1);
+}
+
 
 Shader::~Shader()
 {
