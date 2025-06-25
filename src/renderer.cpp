@@ -1,8 +1,10 @@
 ﻿#include "renderer.h"
 #include <iostream>
 
-void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
-	switch (severity) {
+void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
+{
+	switch (severity)
+	{
 	case GL_DEBUG_SEVERITY_HIGH:
 		std::cout << "[OpenGL Error] ";
 		break;
@@ -21,7 +23,8 @@ void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum se
 	}
 	std::cout << "(";
 	bool error = false;
-	switch (type) {
+	switch (type)
+	{
 	case GL_DEBUG_TYPE_ERROR:
 		std::cout << "ERROR";
 		error = true;
@@ -44,7 +47,8 @@ void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum se
 	}
 
 	std::cout << ") " << message << std::endl;
-	if (error) {
+	if (error)
+	{
 		throw std::runtime_error(message);
 	}
 }
@@ -61,11 +65,13 @@ static temptex testTexture()
 	unsigned char textureData[textureSize];
 
 	// Generate a checkerboard pattern
-	for (int y = 0; y < height; ++y) {
-		for (int x = 0; x < width; ++x) {
+	for (int y = 0; y < height; ++y)
+	{
+		for (int x = 0; x < width; ++x)
+		{
 			// Determine the color of the current pixel
 			bool isWhite = ((x / 10) % 2 == (y / 10) % 2); // 4x4 tiles
-			unsigned char color = isWhite ? 255 : 0;    // White or black
+			unsigned char color = isWhite ? 255 : 0;	   // White or black
 
 			// Set the pixel's RGB values
 			int index = (y * width + x) * 3;
@@ -79,23 +85,22 @@ static temptex testTexture()
 	glCreateTextures(GL_TEXTURE_2D, 1, &texture);
 	glTextureStorage2D(texture, 1, GL_RGB8, width, height);
 
-
-
 	// Upload the checkerboard pattern to the texture
 	glTextureSubImage2D(
 		texture,
 		0, 0, 0, width, height, // level, xoffset, yoffset, width, height
 		GL_RGB, GL_UNSIGNED_BYTE,
-		(const void*)textureData);
+		(const void *)textureData);
 
 	// Retrieve the texture handle after we finish creating the texture
 	const uint64_t handle = glGetTextureHandleARB(texture);
-	if (handle == 0) {
+	if (handle == 0)
+	{
 		std::cerr << "Error! Handle returned null" << std::endl;
 		exit(-1);
 	}
 
-	return { handle };
+	return {handle};
 }
 static BindlessTexture testBindlessTex()
 {
@@ -105,11 +110,13 @@ static BindlessTexture testBindlessTex()
 	std::vector<uint8_t> textureData(textureSize);
 
 	// Generate a checkerboard pattern
-	for (int y = 0; y < height; ++y) {
-		for (int x = 0; x < width; ++x) {
+	for (int y = 0; y < height; ++y)
+	{
+		for (int x = 0; x < width; ++x)
+		{
 			// Determine the color of the current pixel
 			bool isWhite = ((x / 10) % 2 == (y / 10) % 2); // 4x4 tiles
-			unsigned char color = isWhite ? 255 : 0;    // White or black
+			unsigned char color = isWhite ? 255 : 0;	   // White or black
 
 			// Set the pixel's RGB values
 			int index = (y * width + x) * 3;
@@ -121,8 +128,9 @@ static BindlessTexture testBindlessTex()
 	BindlessTexture test(width, height, 3, textureData);
 	return test;
 }
-Renderer::Renderer(GLFWwindow* window, Scene& scene, BVH& bvh)
-	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), cam({ 0, 0, -1.0f }), scene(scene), bvh(bvh) {
+Renderer::Renderer(GLFWwindow *window)
+	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), cam({0, 0, -1.0f}), scene(nullptr), bvh(nullptr)
+{
 	glfwGetFramebufferSize(window, &width, &height);
 	current = 0;
 	frame = 1;
@@ -133,11 +141,23 @@ Renderer::Renderer(GLFWwindow* window, Scene& scene, BVH& bvh)
 	dcounter = 0;
 }
 
-Renderer::~Renderer() {
+void Renderer::setScene(Scene &sceneRef)
+{
+	scene = &sceneRef;
+}
+
+void Renderer::setBVH(BVH &bvhRef)
+{
+	bvh = &bvhRef;
+}
+
+Renderer::~Renderer()
+{
 	// Clean up resources if necessary
 }
 temptex tt;
-void Renderer::init() {
+void Renderer::init()
+{
 	printGLVersion();
 	glViewport(0, 0, width, height);
 	glEnable(GL_DEBUG_OUTPUT);
@@ -146,39 +166,43 @@ void Renderer::init() {
 	setupTextures();
 	setupFramebuffers();
 
-
+	if (!scene || !bvh)
+	{
+		std::cerr << "Renderer::init: Scene or BVH not set!" << std::endl;
+		return;
+	}
 
 	std::vector<BindlessTexture> blCMap;
-
-	for (auto& t : scene.colorMaps)
+	for (auto &t : scene->colorMaps)
 	{
 		blCMap.emplace_back(t.width, t.height, t.channel, t.buffer);
 	}
 
-	bvh = BVH(scene.triangles, 4);
+	// Only rebuild BVH if needed externally, not here
 
 	triangle_data.bind();
-	triangle_data.fillData(scene.triangles);
+	triangle_data.fillData(scene->triangles);
 	triangle_data.bindBase(6);
 
 	mat_data.bind();
-	mat_data.fillData(scene.mats);
+	mat_data.fillData(scene->mats);
 	mat_data.bindBase(7);
 
 	sphere_data.bind();
-	sphere_data.fillData(scene.spheres);
+	sphere_data.fillData(scene->spheres);
 	sphere_data.bindBase(8);
 
 	bvh_data.bind();
-	bvh_data.fillData(bvh.nodes);
+	bvh_data.fillData(bvh->nodes);
 	bvh_data.bindBase(9);
 
 	indices.bind();
-	indices.fillData(bvh.triangleIndices);
+	indices.fillData(bvh->triangleIndices);
 	indices.bindBase(10);
 
 	std::vector<uint64_t> handles;
-	for (auto& blT : blCMap) {
+	for (auto &blT : blCMap)
+	{
 		blT.MakeResident();
 		handles.push_back(blT.GetHandle());
 	}
@@ -187,9 +211,8 @@ void Renderer::init() {
 	textureHandles.fillData(handles);
 	textureHandles.bindBase(11);
 
-
 	Texture::setActiveUnit(3);
-	Texture env(scene.hdr.width, scene.hdr.height, scene.hdr.data);
+	Texture env(scene->hdr.width, scene->hdr.height, scene->hdr.data);
 	rt_shader.bind();
 	rt_shader.initUniForm("hdri");
 	rt_shader.setUniform("hdri", 3);
@@ -197,12 +220,14 @@ void Renderer::init() {
 	Texture::setActiveUnit(1);
 }
 
-void Renderer::processInput() {
+void Renderer::processInput()
+{
 	if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
 		glfwSetWindowShouldClose(window, true);
 }
 
-void Renderer::updateUniforms(float currentTime) {
+void Renderer::updateUniforms(float currentTime)
+{
 	rt_shader.bind();
 	rt_shader.setUniform("iResolution", (float)width, (float)height);
 	rt_shader.setUniform("iTime", currentTime - startTime);
@@ -210,17 +235,21 @@ void Renderer::updateUniforms(float currentTime) {
 	rt_shader.setUniform("delta", delta);
 	rt_shader.setUniform("camera_pos", cam.getPosition().x, cam.getPosition().y, cam.getPosition().z);
 	rt_shader.setUniform("angle_offset", cam.getAngleOffset().x, cam.getAngleOffset().y);
-	rt_shader.setUniform("triangle_size", (int)scene.triangles.size());
-	rt_shader.setUniform("sphere_size", (int)scene.spheres.size());
-	rt_shader.setUniform("bvh_size", (int)bvh.nodes.size());
+	if (!scene || !bvh)
+		return;
+	rt_shader.setUniform("triangle_size", (int)scene->triangles.size());
+	rt_shader.setUniform("sphere_size", (int)scene->spheres.size());
+	rt_shader.setUniform("bvh_size", (int)bvh->nodes.size());
 }
 
-void Renderer::renderScene(float currentTime, float dt) {
+void Renderer::renderScene(float currentTime, float dt)
+{
 	if (this->cam.onUpdate(window, dt))
 	{
 		frame = 0;
 	}
-
+	if (!scene || !bvh)
+		return;
 
 	fbo[current].bind();
 	texture[1 - current].bind();
@@ -241,32 +270,38 @@ void Renderer::renderScene(float currentTime, float dt) {
 	current = 1 - current;
 }
 
-void Renderer::handleResize() {
+void Renderer::handleResize()
+{
 	int current_width, current_height;
 	glfwGetWindowSize(window, &current_width, &current_height);
-	if (current_width != width || current_height != height) {
+	if (current_width != width || current_height != height)
+	{
 		width = current_width;
 		height = current_height;
 		glViewport(0, 0, width, height);
-		for (auto& t : texture) {
+		for (auto &t : texture)
+		{
 			t.reSize(width, height);
 		}
-		for (int i = 0; i < fbo.size(); ++i) {
+		for (int i = 0; i < fbo.size(); ++i)
+		{
 			fbo[i].attachTexure(texture[i]);
 		}
 	}
 }
 
-void Renderer::printGLVersion() {
-	char* glVersion = (char*)glGetString(GL_VERSION);
-	char* glVendor = (char*)glGetString(GL_VENDOR);
-	char* glRenderer = (char*)glGetString(GL_RENDERER);
+void Renderer::printGLVersion()
+{
+	char *glVersion = (char *)glGetString(GL_VERSION);
+	char *glVendor = (char *)glGetString(GL_VENDOR);
+	char *glRenderer = (char *)glGetString(GL_RENDERER);
 	std::cout << "GL Version: " << glVersion << "\n";
 	std::cout << "GL Vendor: " << glVendor << "\n";
 	std::cout << "GL Renderer: " << glRenderer << "\n";
 }
 
-void Renderer::setupShaders() {
+void Renderer::setupShaders()
+{
 	rt_shader.bind();
 	rt_shader.initUniForm("iResolution");
 	rt_shader.initUniForm("iTime");
@@ -288,16 +323,20 @@ void Renderer::setupShaders() {
 	display_shader.setUniform("textureSampler", 1);
 }
 
-void Renderer::setupTextures() {
+void Renderer::setupTextures()
+{
 	texture.reserve(2);
-	for (int i = 0; i < 2; ++i) {
+	for (int i = 0; i < 2; ++i)
+	{
 		texture.push_back(Texture(width, height));
 	}
 }
 
-void Renderer::setupFramebuffers() {
+void Renderer::setupFramebuffers()
+{
 	fbo.resize(2);
-	for (int i = 0; i < 2; ++i) {
+	for (int i = 0; i < 2; ++i)
+	{
 		fbo[i].bind();
 		fbo[i].attachTexure(texture[i]);
 	}
