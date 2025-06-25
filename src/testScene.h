@@ -344,7 +344,7 @@ inline Scene testSceneDragon()
 		Material(vec3(2.0, -2.2, 1.0), 0.0, vec3(2.0f, -2.2f, 1.0f), 0.0, 20.0, 0.0),// 9: Intense Red Emissive (for point light)
 		Material(vec3(1.0, 1.0, 1.0), 0.0, vec3(0.6f, 0.6f, 0.6f), 0.0, 1, 0.0),// 10: Emissive white (main ceiling light)
 		Material(vec3(1.0, 0.0, 0.0), 0.0, vec3(1.0f, 0.0f, 0.0f), 0.0, 55.0 , 0.0),// 11: Bright Red Emissive (for the new cube)
-		Material(vec3(1.0, 1.0, 1.0), 1, vec3(0.0f), 0.001, 0.0, 1.33) // 12: NEW: Refractive Dragon Material (Glass)
+		Material(vec3(1.0, 1.0, 1.0), 1, vec3(0.0f), 0.5, 0.0, 0) // 12: NEW: Refractive Dragon Material (Glass)
 	};
 
 	// Define spheres inside the cube

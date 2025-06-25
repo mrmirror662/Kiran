@@ -20,7 +20,11 @@ file(GLOB_RECURSE DEPS_SOURCES
     "${PROJECT_SOURCE_DIR}/deps/**/*.c"
     "${PROJECT_SOURCE_DIR}/deps/**/*.h"
 )
-
+file(GLOB_RECURSE DEPS_IMGUI
+    "${PROJECT_SOURCE_DIR}/deps/imgui/*.cpp"
+    "${PROJECT_SOURCE_DIR}/deps/imgui/*.c"
+    "${PROJECT_SOURCE_DIR}/deps/imgui/*.h"
+)
 # Combine all source files
 set(SOURCES ${SRC_SOURCES} ${DEPS_SOURCES})
 
@@ -32,6 +36,8 @@ target_include_directories(PathTracingRenderer PUBLIC
     ${PROJECT_SOURCE_DIR}/deps
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/deps/Glad/include/
+    ${PROJECT_SOURCE_DIR}/deps/imgui/
+
 )
 
 

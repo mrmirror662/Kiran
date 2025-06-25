@@ -1,7 +1,7 @@
 ﻿#include "renderer.h"
 #include <iostream>
 
-void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
+void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam)
 {
 	switch (severity)
 	{
@@ -90,7 +90,7 @@ static temptex testTexture()
 		texture,
 		0, 0, 0, width, height, // level, xoffset, yoffset, width, height
 		GL_RGB, GL_UNSIGNED_BYTE,
-		(const void *)textureData);
+		(const void*)textureData);
 
 	// Retrieve the texture handle after we finish creating the texture
 	const uint64_t handle = glGetTextureHandleARB(texture);
@@ -100,7 +100,7 @@ static temptex testTexture()
 		exit(-1);
 	}
 
-	return {handle};
+	return { handle };
 }
 static BindlessTexture testBindlessTex()
 {
@@ -128,8 +128,8 @@ static BindlessTexture testBindlessTex()
 	BindlessTexture test(width, height, 3, textureData);
 	return test;
 }
-Renderer::Renderer(GLFWwindow *window)
-	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), compute_shader(new Shader("shaders/rt.comp")), cam({0, 0, -1.0f}), scene(nullptr), bvh(nullptr)
+Renderer::Renderer(GLFWwindow* window)
+	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), compute_shader(new Shader("shaders/rt.comp")), cam({ 0, 0, -1.0f }), scene(nullptr), bvh(nullptr)
 {
 	glfwGetFramebufferSize(window, &width, &height);
 	current = 0;
@@ -141,12 +141,12 @@ Renderer::Renderer(GLFWwindow *window)
 	dcounter = 0;
 }
 
-void Renderer::setScene(Scene &sceneRef)
+void Renderer::setScene(Scene& sceneRef)
 {
 	scene = &sceneRef;
 }
 
-void Renderer::setBVH(BVH &bvhRef)
+void Renderer::setBVH(BVH& bvhRef)
 {
 	bvh = &bvhRef;
 }
@@ -174,7 +174,7 @@ void Renderer::init()
 	}
 
 	std::vector<BindlessTexture> blCMap;
-	for (auto &t : scene->colorMaps)
+	for (auto& t : scene->colorMaps)
 	{
 		blCMap.emplace_back(t.width, t.height, t.channel, t.buffer);
 	}
@@ -202,7 +202,7 @@ void Renderer::init()
 	indices.bindBase(10);
 
 	std::vector<uint64_t> handles;
-	for (auto &blT : blCMap)
+	for (auto& blT : blCMap)
 	{
 		blT.MakeResident();
 		handles.push_back(blT.GetHandle());
@@ -300,7 +300,7 @@ void Renderer::handleResize()
 		width = current_width;
 		height = current_height;
 		glViewport(0, 0, width, height);
-		for (auto &t : texture)
+		for (auto& t : texture)
 		{
 			t.reSize(width, height);
 		}
@@ -313,9 +313,9 @@ void Renderer::handleResize()
 
 void Renderer::printGLVersion()
 {
-	char *glVersion = (char *)glGetString(GL_VERSION);
-	char *glVendor = (char *)glGetString(GL_VENDOR);
-	char *glRenderer = (char *)glGetString(GL_RENDERER);
+	char* glVersion = (char*)glGetString(GL_VERSION);
+	char* glVendor = (char*)glGetString(GL_VENDOR);
+	char* glRenderer = (char*)glGetString(GL_RENDERER);
 	std::cout << "GL Version: " << glVersion << "\n";
 	std::cout << "GL Vendor: " << glVendor << "\n";
 	std::cout << "GL Renderer: " << glRenderer << "\n";

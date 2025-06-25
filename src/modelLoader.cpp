@@ -71,6 +71,7 @@ std::vector<Triangle> loadFromObj(const std::string meshPath)
 				objtoglm(curMesh.Vertices[idx3].TextureCoordinate),
 				true
 				};
+				t.hasNormal = true;
 				ts.push_back(t);
 			}
 

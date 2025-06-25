@@ -240,6 +240,8 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
         // Compute the face normal
         vec3 faceNormal = normalize(cross(edge1, edge2));
         float w = 1.0 - u - v;
+
+        // Always interpolate UV coordinates if texture data is available
         if (hasTexture)
         {
             interpolatedUv = u * uv1 + v * uv2 + w * uv0;
@@ -248,18 +250,12 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
         {
             interpolatedUv = vec2(0, 0);
         }
+
+        // Always interpolate normals if normal data is available
         if (hasNormal)
         {
-            // Compute barycentric coordinate for w
-
             // Interpolate the normal using barycentric coordinates
             normal = normalize(u * n1 + v * n2 + w * n0);
-
-            // Debugging: Check if normals are provided correctly
-            if (length(n0) == 0.0 || length(n1) == 0.0 || length(n2) == 0.0)
-            {
-                normal = faceNormal; // Fallback to face normal if any normal is zero
-            }
         }
         else
         {
@@ -432,22 +428,34 @@ void main() {
     vec3 fcolor = vec3(0.0);
     float fov = 45.0;
     float fov_rad = radians(fov);
-    float scale_y = tan(fov_rad / 2.0);
-    float scale_x = scale_y * aspect_ratio;
+    float scale = tan(fov_rad * 0.5);
+    float scale_x = scale * aspect_ratio;
     if (iFrame == 1) {
         samples = 1;
-        bounces = 2;
+        bounces = 3;
     }
     vec3 flight = vec3(0.0);
     for (int s = 0; s < samples; ++s) {
-        vec3 jittering = random_vec3() * 0.003;
-        vec3 new_pos = camera_pos;
-        vec3 ray_origin = vec3(0.0 + new_pos.x, 0.0 + new_pos.y, new_pos.z);
-        ray_origin = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_origin;
-        vec3 ray_dir = vec3(uv.x * scale_x, uv.y * scale_x, 1.0f);
-        ray_dir = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_dir;
+
+        // FIXED: Camera position stays at the uniform value, no rotation applied
+        vec3 ray_origin = camera_pos;
+
+        mat3 rotY = rotateY(angle_offset.x);
+        mat3 rotX = rotateX(angle_offset.y);
+        mat3 camera_rotation = rotY * rotX; // Apply yaw first, then pitch
+
+        // Camera forward, right, up vectors
+        vec3 forward = camera_rotation * vec3(0, 0, 1); // Camera looks down +Z
+        vec3 right = camera_rotation * vec3(1, 0, 0); // Camera right is +X
+        vec3 up = camera_rotation * vec3(0, 1, 0); // Camera up is +Y
+
+        // Create ray direction in world space
+        vec3 ray_dir = normalize(forward + uv.x * scale * right + uv.y * scale * up);
+
+        vec3 jittering = random_vec3() * 0.001;
         ray_dir += jittering;
         ray_dir = normalize(ray_dir);
+
         vec3 light = vec3(0.0);
         vec3 contribution = vec3(1.0);
         vec3 bbCol = vec3(0.0f);
