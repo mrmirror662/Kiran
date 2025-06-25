@@ -1,4 +1,4 @@
-#version 460 core
+#version 450 core
 
 in vec2 fragCoord;
 uniform vec2 iResolution;
@@ -20,10 +20,11 @@ void main()
     vec2 ouv = coords.xy / iResolution.xy;
     vec4 texColor = texture(textureSampler, ouv);
 
-    vec4 fcolor = vec4(1.0);
-    if (delta > 0.00001 || iFrame == 1)
+    vec4 fcolor;
+    if (iFrame == 1)
         fcolor = texColor;
     else
-        fcolor = texColor / iFrame;
+        fcolor = texColor / float(iFrame);
+    ;
     FragColor = fcolor;
 }

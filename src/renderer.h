@@ -30,6 +30,7 @@ private:
 	GLFWwindow *window;
 	Shader rt_shader;
 	Shader display_shader;
+	Shader *compute_shader; // Use pointer to avoid default constructor issue
 	std::vector<Texture> texture;
 	std::vector<FrameBuffer> fbo;
 	int width, height;

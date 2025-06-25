@@ -1,6 +1,12 @@
-#version 460
+#version 450
 #extension GL_ARB_bindless_texture : require
 #extension GL_ARB_gpu_shader_int64 : enable
+
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(binding = 0, rgba32f) uniform image2D outputImage;
+layout(binding = 1, rgba32f) uniform image2D prevFrame;
+
+// Uniforms (copied from rt.glsl)
 uniform float iTime;
 uniform vec2 iResolution;
 uniform int iFrame;
@@ -8,13 +14,9 @@ uniform vec3 camera_pos;
 uniform vec2 angle_offset;
 uniform sampler2D screenTexture;
 uniform sampler2D hdri;
-uniform float delta;
-uniform int triangle_size;
+//uniform float delta;
 uniform int sphere_size;
 uniform int bvh_size;
-in vec2 fragCoord;
-out vec4 FragColor;
-in vec4 gl_FragCoord;
 
 uint seed = 0u;
 const float PI = 3.141592;
@@ -411,10 +413,11 @@ bool debug_box(vec3 ray_origin, vec3 ray_dir)
     }
     return false;
 }
-
-void main()
-{
-    vec4 coords = gl_FragCoord;
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= int(iResolution.x) || pix.y >= int(iResolution.y)) return;
+    vec2 fragCoord = vec2(pix);
+    vec4 coords = vec4(fragCoord, 0.0, 1.0);
     initRandomGenerator(coords.xy);
     vec3 dc = vec3(1.0);
     float aspect_ratio = iResolution.x / iResolution.y;
@@ -422,68 +425,52 @@ void main()
     vec2 uv = ouv;
     uv = 2.0 * (uv - 0.5);
     uv.x *= aspect_ratio;
-    vec4 prevColor = texture(screenTexture, ouv);
     int samples = 1;
     int bounces = 4;
-    int max_bounces = bounces; // Track the dynamic bounce limit
-
+    int max_bounces = bounces;
     vec3 sky_color = vec3(0.9, 0.8, 0.8);
-
     vec3 fcolor = vec3(0.0);
     float fov = 45.0;
     float fov_rad = radians(fov);
     float scale_y = tan(fov_rad / 2.0);
     float scale_x = scale_y * aspect_ratio;
-    if (delta > 0.00001)
-    {
+    if (iFrame == 1) {
         samples = 1;
-        bounces = 4;
+        bounces = 2;
     }
     vec3 flight = vec3(0.0);
-    for (int s = 0; s < samples; s++) {
+    for (int s = 0; s < samples; ++s) {
         vec3 jittering = random_vec3() * 0.003;
         vec3 new_pos = camera_pos;
         vec3 ray_origin = vec3(0.0 + new_pos.x, 0.0 + new_pos.y, new_pos.z);
         ray_origin = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_origin;
         vec3 ray_dir = vec3(uv.x * scale_x, uv.y * scale_x, 1.0f);
         ray_dir = rotateY(angle_offset.x) * rotateX(angle_offset.y) * ray_dir;
-
         ray_dir += jittering;
         ray_dir = normalize(ray_dir);
-
         vec3 light = vec3(0.0);
         vec3 contribution = vec3(1.0);
         vec3 bbCol = vec3(0.0f);
-
-        if (bounces == 1)
-        {
-            // Special case: Directly use albedo
+        if (bounces == 1) {
             int intersects = 0;
             HitInfo hi = find_closest(ray_origin, ray_dir, intersects);
-            if (hi.index == -1)
-            {
+            if (hi.index == -1) {
                 vec2 skybox_uv = RayDirectionToUV(ray_dir);
                 vec3 sky_box = texture(hdri, skybox_uv).rgb;
                 sky_box = clamp(sky_box, 0.0f, 1.0f);
                 light = sky_box;
-            }
-            else
-            {
+            } else {
                 Material mat;
                 vec3 hit_point = vec3(0.0f);
                 vec3 normal;
-                if (hi.is_sphere)
-                {
+                if (hi.is_sphere) {
                     Sphere sh = spheres[hi.index];
                     mat = materials[sh.matIndex];
                     hit_point = ray_origin + ray_dir * hi.t;
                     normal = normalize(hit_point - sh.center);
-                }
-                else
-                {
+                } else {
                     Triangle th = triangle[hi.index];
                     mat = materials[th.matIndex];
-
                     hit_point = ray_origin + ray_dir * hi.t;
                     vec2 interpolatedUv = vec2(0.0);
                     intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, interpolatedUv);
@@ -491,42 +478,12 @@ void main()
                 light = mat.albedo;
             }
             fcolor += mix(light, vec3(1.0), 0.0);
-        }
-        else
-        {
-            for (int i = 0; i < bounces; i++)
-            {
+        } else {
+            for (int i = 0; i < bounces; ++i) {
                 int intersects = 0;
                 HitInfo hi = find_closest(ray_origin, ray_dir, intersects);
-                #define ndebug
-                #ifdef bdebug
-                vec3 color = vec3(0.0);
-
-                if (intersects <= 128.0)
-                    color = vec3(0.0, 0.0, 0.0);
-                else if (intersects <= 191.0)
-                    color = mix(vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), (intersects - 128.0) / (191.0 - 128.0));
-                else if (intersects <= 381.0)
-                    color = mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 0.9, 0.0), (intersects - 191.0) / (381.0 - 191.0));
-                else if (intersects <= 512.0)
-                    color = mix(vec3(0.0, 0.9, 0.0), vec3(1.0, 1.0, 0.1), (intersects - 381.0) / (512.0 - 381.0));
-                else
-                    color = mix(vec3(1.0, 1.0, 0.1), vec3(1.0, 0.0, 0.0), (intersects - 512.0) / (1024.0 - 512.0));
-                bbCol = vec3(color);
-                if (intersects == 6969)
-                {
-                    if (delta > 0.00001)
-                    {
-                        FragColor = vec4(vec3(1, 0, 0), 1.0);
-                        return;
-                    }
-                    FragColor = vec4(vec3(1, 0, 0) + prevColor.rgb, 1.0);
-                }
-                #endif
                 float t1 = hi.t;
-
-                if (hi.index == -1)
-                {
+                if (hi.index == -1) {
                     vec2 skybox_uv = RayDirectionToUV(ray_dir);
                     vec3 sky_box = texture(hdri, skybox_uv).rgb;
                     sky_box = clamp(sky_box, 0.0f, 1.0f);
@@ -537,18 +494,14 @@ void main()
                 Material mat;
                 vec3 normal;
                 bool front_face = true;
-                if (hi.is_sphere)
-                {
+                if (hi.is_sphere) {
                     Sphere sh = spheres[hi.index];
                     mat = materials[sh.matIndex];
                     hit_point = ray_origin + ray_dir * t1;
                     normal = normalize(hit_point - sh.center);
-                }
-                else
-                {
+                } else {
                     Triangle th = triangle[hi.index];
                     mat = materials[th.matIndex];
-
                     hit_point = ray_origin + ray_dir * t1;
                     vec2 interpolatedUv = vec2(0.0);
                     intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, interpolatedUv);
@@ -556,7 +509,6 @@ void main()
                         vec3 texColor = texture(sampler2D(textureHandles[th.colourMapIndex]), interpolatedUv).rgb;
                         mat.albedo = texColor;
                     }
-                    // mat.albedo = th.hasTexture == true ? vec3(1, 0, 0) : vec3(0, 1, 0);
                 }
                 vec3 offset = normal * 0.01;
                 ray_origin = hit_point + offset;
@@ -565,7 +517,6 @@ void main()
                 {
                     float eta = 1.8 * (1 - mat.metallic);
                     float eta_fraction = 1.0 / eta;
-
                     float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
                     f0 = f0 * f0;
                     float r0 = f0;
@@ -576,68 +527,49 @@ void main()
                     vec3 diffuse = cosine_weighted_hemisphere(normal);
                     vec3 dielctic = diffuse;
                     de = diffuse;
-                    if (rand_val * 1.2 < reflectance)
-                    {
+                    if (rand_val * 1.2 < reflectance) {
                         vec3 rdir = reflect(nwo, normal);
                         dielctic = mix(rdir, diffuse, mat.roughness);
                         de = dielctic;
                     }
                 }
-
                 vec3 metal_dir = normalize(mix(reflect(ray_dir, normal), cosine_weighted_hemisphere(normal), mat.roughness));
                 ray_dir = mix(de, metal_dir, mat.metallic);
                 contribution *= mix(contribution, mat.albedo, 1);
                 light += get_emission(mat) * contribution;
-                if (dot(-normal, ray_dir) > 0.0)
-                {
+                if (dot(-normal, ray_dir) > 0.0) {
                     front_face = false;
                     normal = -normal;
-                }
-                else
+                } else {
                     front_face = true;
-
-                if (abs(mat.eta) > 0.01)
-                {
-                    // If this is the first time hitting a refractive surface, add 8 more bounces
+                }
+                if (abs(mat.eta) > 0.01) {
                     if (max_bounces == bounces) {
                         max_bounces += 8;
                     }
                     ray_dir = copy;
                     float eta = mat.eta;
                     float eta_fraction = 1.0 / eta;
-
                     float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
                     f0 = f0 * f0;
-
                     if (!front_face)
                         eta_fraction = eta;
                     vec3 nwo = ray_dir;
                     float cos_theta = -dot(normal, nwo);
                     float sin_theta_2 = 1.0 - (eta_fraction * eta_fraction) * (1.0 - cos_theta * cos_theta);
                     bool cannot_refract = sin_theta_2 <= 0.0;
-
                     float r0 = f0;
                     float reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
                     float rand_val = random();
-
                     vec3 dir;
                     vec3 origin;
-
-                    if (!cannot_refract && rand_val * 1.2 > reflectance)
-                    {
-                        // The origin offset needs to be away from the surface normal for refraction
-                        origin = hit_point - normal * 0.001; // Push origin inside the object
-
-                        // Use the built-in GLSL refract function. It's robust and correct.
-                        // It takes the incident vector, the normal, and the ratio of IORs.
+                    if (!cannot_refract && rand_val * 1.2 > reflectance) {
+                        origin = hit_point - normal * 0.001;
                         dir = refract(ray_dir, normal, eta_fraction);
-                    }
-                    else
-                    {
+                    } else {
                         origin = hit_point + normal * 0.01;
                         dir = reflect(nwo, normal);
                     }
-
                     ray_dir = normalize(dir);
                     ray_origin = origin;
                 }
@@ -645,14 +577,18 @@ void main()
             fcolor += mix(light / float(samples), vec3(1.0), 0.0);
         }
     }
+    vec4 outColor = vec4(fcolor, 1.0);
+    // Accumulate and average with previous frame
+    vec2 uv1 = coords.xy / iResolution.xy;
+    vec4 prevCol = imageLoad(prevFrame, pix);
 
-    if (iTime > 1.0f)
-    {
-        if (delta > 0.00001 || iFrame == 1)
-        {
-            FragColor = vec4(fcolor, 1.0);
+    if (iTime > 1.0f) {
+        if (iFrame == 1) {
+            // Reset color to black (or your intended reset color) on camera update or large delta
+            imageStore(outputImage, pix, outColor);
             return;
         }
-        FragColor = prevColor + vec4(fcolor, 1.0);
+        // Otherwise, blend with previous color as before
+        imageStore(outputImage, pix, outColor + prevCol);
     }
 }

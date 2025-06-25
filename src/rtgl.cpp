@@ -49,7 +49,7 @@ int main()
 		fpsTimer = currentTime;
 
 		// Toggle scene and BVH every 10 seconds
-		if (currentTime - lastToggleTime > 1000000000.0f)
+		if (currentTime - lastToggleTime > 100.0f)
 		{
 			currentScene = 1 - currentScene;
 			renderer.setScene(*scenes[currentScene]);

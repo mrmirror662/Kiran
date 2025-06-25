@@ -129,7 +129,7 @@ static BindlessTexture testBindlessTex()
 	return test;
 }
 Renderer::Renderer(GLFWwindow *window)
-	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), cam({0, 0, -1.0f}), scene(nullptr), bvh(nullptr)
+	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), compute_shader(new Shader("shaders/rt.comp")), cam({0, 0, -1.0f}), scene(nullptr), bvh(nullptr)
 {
 	glfwGetFramebufferSize(window, &width, &height);
 	current = 0;
@@ -153,6 +153,7 @@ void Renderer::setBVH(BVH &bvhRef)
 
 Renderer::~Renderer()
 {
+
 	// Clean up resources if necessary
 }
 temptex tt;
@@ -213,11 +214,6 @@ void Renderer::init()
 
 	Texture::setActiveUnit(3);
 	Texture env(scene->hdr.width, scene->hdr.height, scene->hdr.data);
-	rt_shader.bind();
-	rt_shader.initUniForm("hdri");
-	rt_shader.setUniform("hdri", 3);
-
-	Texture::setActiveUnit(1);
 }
 
 void Renderer::processInput()
@@ -228,48 +224,73 @@ void Renderer::processInput()
 
 void Renderer::updateUniforms(float currentTime)
 {
-	rt_shader.bind();
-	rt_shader.setUniform("iResolution", (float)width, (float)height);
-	rt_shader.setUniform("iTime", currentTime - startTime);
-	rt_shader.setUniform("iFrame", frame);
-	rt_shader.setUniform("delta", delta);
-	rt_shader.setUniform("camera_pos", cam.getPosition().x, cam.getPosition().y, cam.getPosition().z);
-	rt_shader.setUniform("angle_offset", cam.getAngleOffset().x, cam.getAngleOffset().y);
-	if (!scene || !bvh)
-		return;
-	rt_shader.setUniform("triangle_size", (int)scene->triangles.size());
-	rt_shader.setUniform("sphere_size", (int)scene->spheres.size());
-	rt_shader.setUniform("bvh_size", (int)bvh->nodes.size());
 }
 
 void Renderer::renderScene(float currentTime, float dt)
 {
 	if (this->cam.onUpdate(window, dt))
 	{
-		frame = 0;
+		frame = 1;
 	}
 	if (!scene || !bvh)
 		return;
 
-	fbo[current].bind();
-	texture[1 - current].bind();
-	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-	glFinish();
+	// Ensure camera + state updates
+	delta = dt;
+
+	// CORRECT ping-pong logic:
+	GLuint outputTexId = texture[current].getId();
+	GLuint prevTexId = texture[1 - current].getId();
+
+	// Bind output texture for compute shader (writeonly image)
+	glBindImageTexture(0, outputTexId, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+	glBindImageTexture(1, prevTexId, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+
+	// Bind compute shader
+	compute_shader->bind();
+
+	// Set uniforms
+	compute_shader->setUniform("iResolution", (float)width, (float)height);
+	compute_shader->setUniform("iTime", currentTime - startTime);
+	compute_shader->setUniform("iFrame", frame);
+	// compute_shader->setUniform("delta", delta);
+	compute_shader->setUniform("camera_pos", cam.getPosition().x, cam.getPosition().y, cam.getPosition().z);
+	compute_shader->setUniform("angle_offset", cam.getAngleOffset().x, cam.getAngleOffset().y);
+	compute_shader->setUniform("prevFrame", 1); // Bind prevFrame to texture unit 1
+
+	compute_shader->setUniform("sphere_size", static_cast<int>(scene->spheres.size()));
+	compute_shader->setUniform("bvh_size", static_cast<int>(bvh->nodes.size()));
+
+	// Bind required SSBOs
+	triangle_data.bindBase(6);
+	mat_data.bindBase(7);
+	sphere_data.bindBase(8);
+	bvh_data.bindBase(9);
+	indices.bindBase(10);
+
+	// Launch compute shader
+	int groupCountX = (width + 31) / 32;
+	int groupCountY = (height + 31) / 32;
+	glDispatchCompute(groupCountX, groupCountY, 1);
+	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
 	frame++;
 
+	// Display result with display shader
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	display_shader.bind();
 	display_shader.setUniform("iResolution", (float)width, (float)height);
 	display_shader.setUniform("iFrame", frame);
-	display_shader.setUniform("delta", delta);
+	// display_shader.setUniform("delta", delta);
 	display_shader.setUniform("textureSampler", 1);
 
-	texture[current].bind();
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, outputTexId);
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
+	// Flip buffers AFTER everything is done
 	current = 1 - current;
 }
-
 void Renderer::handleResize()
 {
 	int current_width, current_height;
@@ -302,25 +323,27 @@ void Renderer::printGLVersion()
 
 void Renderer::setupShaders()
 {
-	rt_shader.bind();
-	rt_shader.initUniForm("iResolution");
-	rt_shader.initUniForm("iTime");
-	rt_shader.initUniForm("iFrame");
-	rt_shader.initUniForm("camera_pos");
-	rt_shader.initUniForm("angle_offset");
-	rt_shader.initUniForm("delta");
-	rt_shader.initUniForm("triangle_size");
-	rt_shader.initUniForm("sphere_size");
-	rt_shader.initUniForm("bvh_size");
-	rt_shader.initUniForm("screenTexture");
-	rt_shader.setUniform("screenTexture", 1);
-
+	// No rt_shader usage here
 	display_shader.bind();
-	display_shader.initUniForm("iResolution");
-	display_shader.initUniForm("iFrame");
-	display_shader.initUniForm("delta");
-	display_shader.initUniForm("textureSampler");
+	display_shader.initUniform("iResolution");
+	display_shader.initUniform("iFrame");
+	// display_shader.initUniform("delta");
+	display_shader.initUniform("textureSampler");
 	display_shader.setUniform("textureSampler", 1);
+
+	compute_shader->bind();
+	compute_shader->initUniform("iResolution");
+	compute_shader->initUniform("iTime");
+	compute_shader->initUniform("iFrame");
+	compute_shader->initUniform("camera_pos");
+	compute_shader->initUniform("angle_offset");
+	// compute_shader->initUniform("delta");
+	compute_shader->initUniform("triangle_size");
+	compute_shader->initUniform("sphere_size");
+	compute_shader->initUniform("bvh_size");
+	compute_shader->initUniform("hdri");
+	compute_shader->setUniform("hdri", 3);
+	compute_shader->initUniform("prevFrame"); // Bind prevFrame to texture unit 2
 }
 
 void Renderer::setupTextures()
