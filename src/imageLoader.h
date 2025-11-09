@@ -18,5 +18,7 @@ struct Image
 	int width;
 	int height;
 };
-HDRI loadHDRI(const std::string& path);
-Image LoadImage(const std::string& path);
+namespace imgutl {
+	HDRI loadHDRI(const std::string& path);
+	Image LoadImageFromPath(const std::string& path);
+}

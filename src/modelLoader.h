@@ -1,11 +1,14 @@
-#pragma once
+﻿#pragma once
 
 #include<string>
 #include <glm/glm.hpp>
 #include"primitives.h"
-namespace objl{
-    struct Vector3;
-}
-glm::vec3 objtoglm(const objl::Vector3& in);
+#include <tuple>
 
-std::vector<Triangle> loadFromObj(const std::string meshPath);
+
+std::tuple<std::vector<Triangle>, std::vector<Material>, std::vector<Image>>
+loadFromObjWithMaterials(const std::string& meshPath);
+
+
+std::tuple<std::vector<Triangle>, std::vector<Material>, std::vector<Image>>
+loadFromGLTFWithMaterials(const std::string& meshPath);

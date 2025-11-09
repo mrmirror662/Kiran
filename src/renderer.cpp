@@ -1,7 +1,7 @@
 ﻿#include "renderer.h"
 #include <iostream>
 
-void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam)
+void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
 {
 	switch (severity)
 	{
@@ -90,7 +90,7 @@ static temptex testTexture()
 		texture,
 		0, 0, 0, width, height, // level, xoffset, yoffset, width, height
 		GL_RGB, GL_UNSIGNED_BYTE,
-		(const void*)textureData);
+		(const void *)textureData);
 
 	// Retrieve the texture handle after we finish creating the texture
 	const uint64_t handle = glGetTextureHandleARB(texture);
@@ -100,7 +100,7 @@ static temptex testTexture()
 		exit(-1);
 	}
 
-	return { handle };
+	return {handle};
 }
 static BindlessTexture testBindlessTex()
 {
@@ -128,8 +128,8 @@ static BindlessTexture testBindlessTex()
 	BindlessTexture test(width, height, 3, textureData);
 	return test;
 }
-Renderer::Renderer(GLFWwindow* window)
-	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), compute_shader(new Shader("shaders/rt.comp")), cam({ 0, 0, -1.0f }), scene(nullptr), bvh(nullptr)
+Renderer::Renderer(GLFWwindow *window)
+	: window(window), rt_shader("shaders/rt.glsl", "shaders/vert.glsl"), display_shader("shaders/display.glsl", "shaders/vert.glsl"), compute_shader(new Shader("shaders/rt.comp")), cam({0, 0, -1.0f}), scene(nullptr), bvh(nullptr)
 {
 	glfwGetFramebufferSize(window, &width, &height);
 	current = 0;
@@ -141,12 +141,12 @@ Renderer::Renderer(GLFWwindow* window)
 	dcounter = 0;
 }
 
-void Renderer::setScene(Scene& sceneRef)
+void Renderer::setScene(Scene &sceneRef)
 {
 	scene = &sceneRef;
 }
 
-void Renderer::setBVH(BVH& bvhRef)
+void Renderer::setBVH(BVH &bvhRef)
 {
 	bvh = &bvhRef;
 }
@@ -172,17 +172,26 @@ void Renderer::init()
 		std::cerr << "Renderer::init: Scene or BVH not set!" << std::endl;
 		return;
 	}
-
-	std::vector<BindlessTexture> blCMap;
-	for (auto& t : scene->colorMaps)
+	std::cout << "colorMaps size: " << scene->colorMaps.size() << std::endl;
+	for (const auto &t : scene->colorMaps)
 	{
+		std::cout << "w: " << t.width << " h: " << t.height << " ch: " << t.channel << " buf: " << std::endl;
+	}
+	std::vector<BindlessTexture> blCMap;
+	for (auto &t : scene->colorMaps)
+	{
+		if (t.channel != 3 && t.channel != 4)
+		{
+			std::cerr << "Skipping texture with unsupported channel count: " << t.channel << std::endl;
+			continue;
+		}
 		blCMap.emplace_back(t.width, t.height, t.channel, t.buffer);
 	}
 
 	// Only rebuild BVH if needed externally, not here
 
 	triangle_data.bind();
-	triangle_data.fillData(scene->triangles);
+	triangle_data.fillData(bvh->triangles);
 	triangle_data.bindBase(6);
 
 	mat_data.bind();
@@ -197,12 +206,8 @@ void Renderer::init()
 	bvh_data.fillData(bvh->nodes);
 	bvh_data.bindBase(9);
 
-	indices.bind();
-	indices.fillData(bvh->triangleIndices);
-	indices.bindBase(10);
-
 	std::vector<uint64_t> handles;
-	for (auto& blT : blCMap)
+	for (auto &blT : blCMap)
 	{
 		blT.MakeResident();
 		handles.push_back(blT.GetHandle());
@@ -230,7 +235,7 @@ void Renderer::renderScene(float currentTime, float dt)
 {
 	if (this->cam.onUpdate(window, dt))
 	{
-		frame = 1;
+		this->resetFrame();
 	}
 	if (!scene || !bvh)
 		return;
@@ -261,6 +266,14 @@ void Renderer::renderScene(float currentTime, float dt)
 	compute_shader->setUniform("sphere_size", static_cast<int>(scene->spheres.size()));
 	compute_shader->setUniform("bvh_size", static_cast<int>(bvh->nodes.size()));
 
+	// Set path tracing control uniforms
+	compute_shader->setUniform("accumulateBounces", accumulateBounces);
+	compute_shader->setUniform("movingBounces", movingBounces);
+	compute_shader->setUniform("accumulateSamples", accumulateSamples);
+	compute_shader->setUniform("movingSamples", movingSamples);
+	// --- FOV uniform ---
+	compute_shader->setUniform("fov", fov);
+
 	// Bind required SSBOs
 	triangle_data.bindBase(6);
 	mat_data.bindBase(7);
@@ -269,12 +282,12 @@ void Renderer::renderScene(float currentTime, float dt)
 	indices.bindBase(10);
 
 	// Launch compute shader
-	int groupCountX = (width + 31) / 32;
-	int groupCountY = (height + 31) / 32;
+	int groupCountX = (width + 7) / 8;
+	int groupCountY = (height + 7) / 8;
 	glDispatchCompute(groupCountX, groupCountY, 1);
-	glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-	frame++;
+	// glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+	if (accumulate)
+		frame++;
 
 	// Display result with display shader
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -300,7 +313,7 @@ void Renderer::handleResize()
 		width = current_width;
 		height = current_height;
 		glViewport(0, 0, width, height);
-		for (auto& t : texture)
+		for (auto &t : texture)
 		{
 			t.reSize(width, height);
 		}
@@ -308,14 +321,27 @@ void Renderer::handleResize()
 		{
 			fbo[i].attachTexure(texture[i]);
 		}
+		this->resetFrame();
 	}
+}
+
+void Renderer::resetFrame()
+{
+	this->frame = 1;
+}
+
+void Renderer::setAccumulation(bool accumulate)
+{
+	if (this->accumulate != accumulate)
+		this->resetFrame();
+	this->accumulate = accumulate;
 }
 
 void Renderer::printGLVersion()
 {
-	char* glVersion = (char*)glGetString(GL_VERSION);
-	char* glVendor = (char*)glGetString(GL_VENDOR);
-	char* glRenderer = (char*)glGetString(GL_RENDERER);
+	char *glVersion = (char *)glGetString(GL_VERSION);
+	char *glVendor = (char *)glGetString(GL_VENDOR);
+	char *glRenderer = (char *)glGetString(GL_RENDERER);
 	std::cout << "GL Version: " << glVersion << "\n";
 	std::cout << "GL Vendor: " << glVendor << "\n";
 	std::cout << "GL Renderer: " << glRenderer << "\n";
@@ -344,6 +370,14 @@ void Renderer::setupShaders()
 	compute_shader->initUniform("hdri");
 	compute_shader->setUniform("hdri", 3);
 	compute_shader->initUniform("prevFrame"); // Bind prevFrame to texture unit 2
+
+	compute_shader->initUniform("accumulateBounces");
+	compute_shader->initUniform("movingBounces");
+	compute_shader->initUniform("accumulateSamples");
+	compute_shader->initUniform("movingSamples");
+	// --- FOV uniform ---
+	compute_shader->initUniform("fov");
+	compute_shader->setUniform("fov", fov);
 }
 
 void Renderer::setupTextures()

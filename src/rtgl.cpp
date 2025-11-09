@@ -29,13 +29,14 @@ int main()
 	glfwSwapInterval(1);
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
-	ImGuiIO& io = ImGui::GetIO(); (void)io;
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+	ImGuiIO& io = ImGui::GetIO();
+	(void)io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // Enable Gamepad Controls
 
 	// Setup Dear ImGui style
-	ImGui::StyleColorsDark();
-	//ImGui::StyleColorsLight();
+	ImGui::StyleColorsClassic();
+	// ImGui::StyleColorsLight();
 
 	// Setup scaling
 	ImGuiStyle& style = ImGui::GetStyle();
@@ -47,13 +48,11 @@ int main()
 	bool show_another_window = false;
 	ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-	Scene scene1 = testSceneBox();
-	BVH bvh1(scene1.triangles, 4);
-	Scene scene2 = testSceneBox();
-	BVH bvh2(scene2.triangles, 4);
+	Scene scene1 = testSceneGLTF();
+	BVH bvh1(scene1.triangles, 32);
 
-	Scene* scenes[2] = { &scene1, &scene2 };
-	BVH* bvhs[2] = { &bvh1, &bvh2 };
+	Scene* scenes[1] = { &scene1 };
+	BVH* bvhs[1] = { &bvh1 };
 	int currentScene = 0;
 
 	Renderer renderer(window);
@@ -62,33 +61,60 @@ int main()
 	renderer.init();
 
 	float lastToggleTime = glfwGetTime();
+	bool resetFrameRequested = false;
+	bool accumulationEnabled = true;
 
 	while (!glfwWindowShouldClose(window))
 	{
-		//imgui stuff
-		{
-			ImGui_ImplOpenGL3_NewFrame();
-			ImGui_ImplGlfw_NewFrame();
-			ImGui::NewFrame();
-			if (show_demo_window)
-				ImGui::ShowDemoWindow(&show_demo_window);
-
-		}
+		// timing stuff
 		float currentTime = glfwGetTime();
 		static float fpsTimer = currentTime;
 		static float printTimer = currentTime;
 		float dt = currentTime - fpsTimer;
 		fpsTimer = currentTime;
-
-		// Toggle scene and BVH every 10 seconds
-		if (currentTime - lastToggleTime > 1000000000.0f)
+		// imgui stuff
 		{
-			currentScene = 1 - currentScene;
-			renderer.setScene(*scenes[currentScene]);
-			renderer.setBVH(*bvhs[currentScene]);
-			renderer.init();
-			lastToggleTime = currentTime;
+			ImGui_ImplOpenGL3_NewFrame();
+			ImGui_ImplGlfw_NewFrame();
+			ImGui::NewFrame();
+
+			// Custom UI
+			ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 300, 0), ImGuiCond_Always);
+			ImGui::SetNextWindowSize(ImVec2(300, io.DisplaySize.y), ImGuiCond_Always);
+			ImGui::Begin("Renderer Stats", nullptr);
+			ImGui::Text("FPS: %.1f", 1.0f / dt);
+			resetFrameRequested = ImGui::Button("Reset Frame");
+			ImGui::Checkbox("Enable Accumulation", &accumulationEnabled);
+			ImGui::Separator();
+			// Path tracing control sliders
+			int accBounces = renderer.getAccumulateBounces();
+			int movBounces = renderer.getMovingBounces();
+			int accSamples = renderer.getAccumulateSamples();
+			int movSamples = renderer.getMovingSamples();
+			if (ImGui::InputInt("Accumulate Bounces", &accBounces, 1, 8))
+				renderer.setAccumulateBounces(accBounces);
+			if (ImGui::InputInt("Moving Bounces", &movBounces, 1, 8))
+				renderer.setMovingBounces(movBounces);
+			if (ImGui::InputInt("Accumulate Samples", &accSamples, 1, 8))
+				renderer.setAccumulateSamples(accSamples);
+			if (ImGui::InputInt("Moving Samples", &movSamples, 1, 8))
+				renderer.setMovingSamples(movSamples);
+			ImGui::Separator();
+			// Camera controls
+			float camSpeed = renderer.cam.getSpeed();
+			if (ImGui::InputFloat("Camera Speed", &camSpeed, 0.1f, 1.0f, "%.2f"))
+				renderer.cam.setSpeed(camSpeed);
+			glm::vec3 camPos = renderer.cam.getPosition();
+			if (ImGui::InputFloat3("Camera Position", &camPos.x, "%.2f"))
+				renderer.cam.setPosition(camPos);
+			// --- FOV slider ---
+			float fov = renderer.getFov();
+			int ifov = fov;
+			if (ImGui::SliderInt("FOV (deg)", &ifov, 0, 128))
+				renderer.setFov(float(ifov));
+			ImGui::End();
 		}
+
 
 		if (currentTime - printTimer > 1.0f)
 		{
@@ -99,11 +125,16 @@ int main()
 			printTimer = currentTime;
 		}
 
+		if (resetFrameRequested)
+		{
+			renderer.resetFrame();
+		}
+		renderer.setAccumulation(accumulationEnabled);
 		renderer.processInput();
 		renderer.updateUniforms(currentTime);
 		renderer.renderScene(currentTime, dt);
 
-		//imgui stuff
+		// imgui stuff
 		{
 			ImGui::Render();
 			ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -115,8 +146,6 @@ int main()
 			ImGui_ImplGlfw_Sleep(10);
 			continue;
 		}
-
-
 	}
 
 	glfwTerminate();

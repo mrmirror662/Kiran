@@ -1,4 +1,5 @@
 #include "BindlessTexture.h"
+#include<cassert>
 BindlessTexture::BindlessTexture(int width, int height, int channel, std::vector<uint8_t> buffer)
 {
 	this->width = width;
@@ -8,8 +9,13 @@ BindlessTexture::BindlessTexture(int width, int height, int channel, std::vector
 	this->channel = channel;
 
 	glCreateTextures(GL_TEXTURE_2D, 1, &this->textureId);
+	assert(!(channel != 3 && channel != 4));
 
-	glTextureStorage2D(this->textureId, 1, GL_RGB8, width, height);
+
+	if (channel == 3)
+		glTextureStorage2D(this->textureId, 1, GL_RGB8, width, height);
+	if (channel == 4)
+		glTextureStorage2D(this->textureId, 1, GL_RGBA8, width, height);
 
 	glTextureSubImage2D(
 		this->textureId,

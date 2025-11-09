@@ -15,6 +15,9 @@ class Camera
 	glm::vec2 angle{0};
 	bool init_mouse = false;
 
+private:
+	float speed = 10.0f;
+
 public:
 	Camera(glm::vec3 position) { this->position = position; }
 
@@ -22,7 +25,6 @@ public:
 	bool onUpdate(WindowHandler *window, float dt)
 	{
 		glm::vec3 offset{0.0f};
-		float speed = 10.0f;
 		bool moved = false;
 
 		// Collect input first
@@ -117,6 +119,9 @@ public:
 		return moved;
 	}
 
-	auto getPosition() { return position; }
+	void setSpeed(float s) { speed = s; }
+	float getSpeed() const { return speed; }
+	void setPosition(const glm::vec3 &pos) { position = pos; }
+	glm::vec3 getPosition() const { return position; }
 	auto getAngleOffset() { return angle; }
 };

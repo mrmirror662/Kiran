@@ -2,7 +2,7 @@
 #extension GL_ARB_bindless_texture : require
 #extension GL_ARB_gpu_shader_int64 : enable
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(binding = 0, rgba32f) uniform image2D outputImage;
 layout(binding = 1, rgba32f) uniform image2D prevFrame;
 
@@ -17,7 +17,12 @@ uniform sampler2D hdri;
 //uniform float delta;
 uniform int sphere_size;
 uniform int bvh_size;
-
+uniform int accumulateBounces;
+uniform int movingBounces;
+uniform int accumulateSamples;
+uniform int movingSamples;
+uniform float fov;
+uniform int debug_all_triangles;
 uint seed = 0u;
 const float PI = 3.141592;
 
@@ -84,7 +89,6 @@ mat3 rotateX(float theta)
         vec3(0, c, -s),
         vec3(0, s, c));
 }
-
 // Rotation matrix around the Y axis.
 mat3 rotateY(float theta)
 {
@@ -235,7 +239,7 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
         return -1.0;
 
     float t = f * dot(edge2, q);
-    if (t > 0.0001) // ray intersection
+    if (t > 1e-7) // ray intersection
     {
         // Compute the face normal
         vec3 faceNormal = normalize(cross(edge1, edge2));
@@ -273,6 +277,29 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
     }
     return -1.0;
 }
+// Lightweight triangle intersection: only returns t, no normal/uv interpolation
+float intersectTriangleSimple(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2)
+{
+    vec3 edge1 = v1 - v0;
+    vec3 edge2 = v2 - v0;
+    vec3 h = cross(rd, edge2);
+    float a = dot(edge1, h);
+    if (abs(a) < 0.0001)
+        return -1.0;
+    float f = 1.0 / a;
+    vec3 s = ro - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0)
+        return -1.0;
+    vec3 q = cross(s, edge1);
+    float v = f * dot(rd, q);
+    if (v < 0.0 || u + v > 1.0)
+        return -1.0;
+    float t = f * dot(edge2, q);
+    if (t > 0.0001)
+        return t;
+    return -1.0;
+}
 // Function to calculate the intersection of a ray with a sphere
 float get_t(vec3 ray_origin, vec3 ray_dir, vec3 center, float r)
 {
@@ -296,17 +323,16 @@ float get_t(vec3 ray_origin, vec3 ray_dir, vec3 center, float r)
         return t2;
     return -1.0;
 }
-bool intersectBox(vec3 ray_origin, vec3 ray_dir, vec3 min_, vec3 max_, out float tmin, out float tmax)
-{
-    vec3 invDir = 1.0 / ray_dir;
-    vec3 t0s = (min_ - ray_origin) * invDir;
-    vec3 t1s = (max_ - ray_origin) * invDir;
+// Update intersectBox to take rayinv as argument
+bool intersectBox(vec3 ray_origin, vec3 ray_dir, vec3 rayinv, vec3 min_, vec3 max_, out float tmin, out float tmax) {
+    vec3 t0s = (min_ - ray_origin) * rayinv;
+    vec3 t1s = (max_ - ray_origin) * rayinv;
     vec3 tSmall = min(t0s, t1s);
     vec3 tLarge = max(t0s, t1s);
     float epsilon = 0.0001;
     tmin = max(max(tSmall.x, tSmall.y), tSmall.z);
     tmax = min(min(tLarge.x, tLarge.y), tLarge.z);
-    return tmax > max(epsilon, tmin);
+    return tmax >= tmin && tmax > 0.0;
 }
 // Struct to store intersection information
 struct HitInfo
@@ -316,100 +342,136 @@ struct HitInfo
     bool is_sphere;
 };
 
-// Function to find the closest sphere intersection
-HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, out int intersects)
-{
+// Function to find the closest sphere/triangle intersection (refactored)
+HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, vec3 rayinv, out int intersects) {
     float min_t = 1e30;
     int min_index = -1;
     bool is_sphere = true;
-
-    // Sphere intersection
-    for (int i = 0; i < sphere_size; i++)
-    {
+    intersects = 0;
+    for (int i = 0; i < sphere_size; ++i) {
         float t = get_t(ray_origin, ray_dir, spheres[i].center, spheres[i].r);
-        if (t > 0.0 && t < min_t)
-        {
+        if (t > 0.0 && t < min_t) {
             min_t = t;
             min_index = i;
             is_sphere = true;
         }
     }
-
-    // BVH traversal for triangles
     int stack[32];
     int stack_top = 0;
-    intersects = 0;
-
+    float tri_min_t = min_t;
+    int tri_min_index = -1;
     if (bvh_size > 0) {
-        stack[stack_top++] = 0; // Only push if BVH is not empty
+        stack[stack_top++] = 0;
     }
-
-    while (stack_top > 0)
-    {
+    while (stack_top > 0) {
         int index = stack[--stack_top];
         BVHNode node = bvh[index];
-
-        // Early skip if the closest intersection is closer than this node's bounding box
         float tmin, tmax;
-        if (!intersectBox(ray_origin, ray_dir, node.box.min_, node.box.max_, tmin, tmax) || tmin > min_t)
+        if (!intersectBox(ray_origin, ray_dir, rayinv, node.box.min_, node.box.max_, tmin, tmax) || tmin > tri_min_t) {
             continue;
-
-        if (node.left == -1 && node.right == -1)
-        {
-            // Leaf node: test all triangles
-            for (int i = node.start; i < node.end; i++)
-            {
-                vec3 normal;
-                vec2 interpolatedUv;
-                int idx = indices[i];
-                float t = intersectTriangle(ray_origin, ray_dir,
-                        triangle[idx].v0, triangle[idx].v1, triangle[idx].v2,
-                        triangle[idx].n0, triangle[idx].n1, triangle[idx].n2,
-                        triangle[idx].hasNormal, normal,
-                        triangle[idx].uv0, triangle[idx].uv1, triangle[idx].uv2,
-                        triangle[idx].hasTexture, interpolatedUv);
-                if (t > 0.0 && t < min_t)
-                {
-                    min_t = t;
-                    min_index = idx;
-                    is_sphere = false;
+        }
+        bool is_leaf = (node.left == -1 && node.right == -1);
+        if (is_leaf) {
+            for (int i = node.start; i < node.end; ++i) {
+               // int idx = indices[i];
+                float t = intersectTriangleSimple(ray_origin, ray_dir, triangle[i].v0, triangle[i].v1, triangle[i].v2);
+                intersects++; // triangle test
+                if (t > 0.0 && t < tri_min_t) {
+                    tri_min_t = t;
+                    //tri_min_index = idx;
+                    tri_min_index = i;
                 }
-                intersects++;
+            }
+        } else {
+            int left = node.left;
+            int right = node.right;
+            float tminL, tmaxL;
+            float tminR, tmaxR;
+            bool hitL = (left != -1) && intersectBox(ray_origin, ray_dir, rayinv, bvh[left].box.min_, bvh[left].box.max_, tminL, tmaxL) && tminL < tri_min_t;
+            bool hitR = (right != -1) && intersectBox(ray_origin, ray_dir, rayinv, bvh[right].box.min_, bvh[right].box.max_, tminR, tmaxR) && tminR < tri_min_t;
+            intersects += int(hitL) + int(hitR); // bbox tests
+            if (hitL && hitR) {
+                if (tminL < tminR) {
+                    stack[stack_top++] = right;
+                    stack[stack_top++] = left;
+                } else {
+                    stack[stack_top++] = left;
+                    stack[stack_top++] = right;
+                }
+            } else if (hitL) {
+                stack[stack_top++] = left;
+            } else if (hitR) {
+                stack[stack_top++] = right;
             }
         }
-        else
-        {
-            // Internal node: push children whose bounding boxes are hit and closer than min_t
-            if (node.left != -1) {
-                float tmin_left, tmax_left;
-                if (intersectBox(ray_origin, ray_dir, bvh[node.left].box.min_, bvh[node.left].box.max_, tmin_left, tmax_left) && tmin_left < min_t)
-                    stack[stack_top++] = node.left;
-            }
-            if (node.right != -1) {
-                float tmin_right, tmax_right;
-                if (intersectBox(ray_origin, ray_dir, bvh[node.right].box.min_, bvh[node.right].box.max_, tmin_right, tmax_right) && tmin_right < min_t)
-                    stack[stack_top++] = node.right;
-            }
-            intersects++;
-        }
+    }
+    if (tri_min_index != -1 && tri_min_t < min_t) {
+        min_t = tri_min_t;
+        min_index = tri_min_index;
+        is_sphere = false;
     }
     return HitInfo(min_t, min_index, is_sphere);
 }
-bool debug_box(vec3 ray_origin, vec3 ray_dir)
-{
+bool debug_box(vec3 ray_origin, vec3 ray_dir, vec3 rayinv) {
     float min_t = 1e20;
     int min_index = -1;
     float tmin, tmax;
-    for (int i = 0; i < bvh_size; i++)
-    {
+    for (int i = 0; i < bvh_size; ++i) {
         vec3 normal;
-        bool inter = intersectBox(ray_origin, ray_dir, bvh[i].box.min_, bvh[i].box.max_, tmin, tmax);
-        if (inter)
+        bool inter = intersectBox(ray_origin, ray_dir, rayinv, bvh[i].box.min_, bvh[i].box.max_, tmin, tmax);
+        if (inter) {
             return true;
+        }
     }
     return false;
 }
+//#define DEBUG_ALL_TRIANGLES 0
 void main() {
+#ifdef DEBUG_ALL_TRIANGLES
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= int(iResolution.x) || pix.y >= int(iResolution.y)) return;
+    vec2 fragCoord = vec2(pix);
+    vec4 coords = vec4(fragCoord, 0.0, 1.0);
+    float aspect_ratio = iResolution.x / iResolution.y;
+    vec2 ouv = coords.xy / iResolution.xy;
+    vec2 uv = ouv;
+    uv = 2.0 * (uv - 0.5);
+    uv.x *= aspect_ratio;
+    float fov_rad = radians(fov);
+    float scale = tan(fov_rad * 0.5);
+    float scale_x = scale * aspect_ratio;
+    mat3 rotY = rotateY(angle_offset.x);
+    mat3 rotX = rotateX(angle_offset.y);
+    mat3 camera_rotation = rotY * rotX;
+    vec3 forward = camera_rotation * vec3(0, 0, 1);
+    vec3 right = camera_rotation * vec3(1, 0, 0);
+    vec3 up = camera_rotation * vec3(0, 1, 0);
+    vec3 ray_origin = camera_pos;
+    vec3 ray_dir = normalize(forward + uv.x * scale * right + uv.y * scale * up);
+    vec3 jittering = random_vec3() * 0.001;
+    ray_dir += jittering;
+    ray_dir = normalize(ray_dir);
+    float min_t = 1e30;
+    int min_index = -1;
+    for (int i = 0; i < triangle.length(); ++i) {
+        float t = intersectTriangleSimple(ray_origin, ray_dir, triangle[i].v0, triangle[i].v1, triangle[i].v2);
+        if (t > 0.0 && t < min_t) {
+            min_t = t;
+            min_index = i;
+        }
+    }
+    vec3 outCol = vec3(0.0);
+    if (min_index != -1) {
+        // Flat shade: color by triangle index
+        float shade = float((min_index % 32)) / 31.0;
+        outCol = vec3(shade, 1.0 - shade, 0.5 + 0.5 * shade);
+    } else {
+        // Miss: show background
+        outCol = vec3(0.0, 0.0, 0.0);
+    }
+    imageStore(outputImage, pix, vec4(outCol, 1.0));
+    return;
+#else
     ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
     if (pix.x >= int(iResolution.x) || pix.y >= int(iResolution.y)) return;
     vec2 fragCoord = vec2(pix);
@@ -421,47 +483,38 @@ void main() {
     vec2 uv = ouv;
     uv = 2.0 * (uv - 0.5);
     uv.x *= aspect_ratio;
-    int samples = 1;
-    int bounces = 4;
-    int max_bounces = bounces;
+    int samples = accumulateSamples;
+    int bounces = accumulateBounces;
+    int max_bounces = accumulateBounces;
     vec3 sky_color = vec3(0.9, 0.8, 0.8);
     vec3 fcolor = vec3(0.0);
-    float fov = 45.0;
     float fov_rad = radians(fov);
     float scale = tan(fov_rad * 0.5);
     float scale_x = scale * aspect_ratio;
     if (iFrame == 1) {
-        samples = 1;
-        bounces = 3;
+        samples = movingSamples;
+        bounces = movingBounces;
     }
     vec3 flight = vec3(0.0);
     for (int s = 0; s < samples; ++s) {
-
-        // FIXED: Camera position stays at the uniform value, no rotation applied
         vec3 ray_origin = camera_pos;
-
         mat3 rotY = rotateY(angle_offset.x);
         mat3 rotX = rotateX(angle_offset.y);
-        mat3 camera_rotation = rotY * rotX; // Apply yaw first, then pitch
-
-        // Camera forward, right, up vectors
-        vec3 forward = camera_rotation * vec3(0, 0, 1); // Camera looks down +Z
-        vec3 right = camera_rotation * vec3(1, 0, 0); // Camera right is +X
-        vec3 up = camera_rotation * vec3(0, 1, 0); // Camera up is +Y
-
-        // Create ray direction in world space
+        mat3 camera_rotation = rotY * rotX;
+        vec3 forward = camera_rotation * vec3(0, 0, 1);
+        vec3 right = camera_rotation * vec3(1, 0, 0);
+        vec3 up = camera_rotation * vec3(0, 1, 0);
         vec3 ray_dir = normalize(forward + uv.x * scale * right + uv.y * scale * up);
-
         vec3 jittering = random_vec3() * 0.001;
         ray_dir += jittering;
         ray_dir = normalize(ray_dir);
-
+        vec3 rayinv = 1.0 / ray_dir;
         vec3 light = vec3(0.0);
         vec3 contribution = vec3(1.0);
         vec3 bbCol = vec3(0.0f);
         if (bounces == 1) {
             int intersects = 0;
-            HitInfo hi = find_closest(ray_origin, ray_dir, intersects);
+            HitInfo hi = find_closest(ray_origin, ray_dir, rayinv, intersects);
             if (hi.index == -1) {
                 vec2 skybox_uv = RayDirectionToUV(ray_dir);
                 vec3 sky_box = texture(hdri, skybox_uv).rgb;
@@ -489,12 +542,13 @@ void main() {
         } else {
             for (int i = 0; i < bounces; ++i) {
                 int intersects = 0;
-                HitInfo hi = find_closest(ray_origin, ray_dir, intersects);
+                HitInfo hi = find_closest(ray_origin, ray_dir, rayinv, intersects);
                 float t1 = hi.t;
                 if (hi.index == -1) {
                     vec2 skybox_uv = RayDirectionToUV(ray_dir);
                     vec3 sky_box = texture(hdri, skybox_uv).rgb;
-                    sky_box = clamp(sky_box, 0.0f, 1.0f);
+                    sky_box = clamp(sky_box, 0.0f, 10.0f);
+                    sky_box = (vec3(0,0,0) + sky_box);
                     light += sky_box * contribution;
                     break;
                 }
@@ -543,8 +597,14 @@ void main() {
                 }
                 vec3 metal_dir = normalize(mix(reflect(ray_dir, normal), cosine_weighted_hemisphere(normal), mat.roughness));
                 ray_dir = mix(de, metal_dir, mat.metallic);
+                rayinv = 1.0 / ray_dir;
                 contribution *= mix(contribution, mat.albedo, 1);
+                
                 light += get_emission(mat) * contribution;
+                // Stop ray if material is emissive
+                if (mat.emission_power > 0.0 || length(mat.emission_color) > 0.0) {
+                    break;
+                }
                 if (dot(-normal, ray_dir) > 0.0) {
                     front_face = false;
                     normal = -normal;
@@ -556,6 +616,7 @@ void main() {
                         max_bounces += 8;
                     }
                     ray_dir = copy;
+                    rayinv = 1.0 / ray_dir;
                     float eta = mat.eta;
                     float eta_fraction = 1.0 / eta;
                     float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
@@ -579,24 +640,23 @@ void main() {
                         dir = reflect(nwo, normal);
                     }
                     ray_dir = normalize(dir);
+                    rayinv = 1.0 / ray_dir;
                     ray_origin = origin;
                 }
             }
             fcolor += mix(light / float(samples), vec3(1.0), 0.0);
         }
     }
+
     vec4 outColor = vec4(fcolor, 1.0);
-    // Accumulate and average with previous frame
     vec2 uv1 = coords.xy / iResolution.xy;
     vec4 prevCol = imageLoad(prevFrame, pix);
-
     if (iTime > 1.0f) {
         if (iFrame == 1) {
-            // Reset color to black (or your intended reset color) on camera update or large delta
             imageStore(outputImage, pix, outColor);
             return;
         }
-        // Otherwise, blend with previous color as before
         imageStore(outputImage, pix, outColor + prevCol);
     }
+    #endif
 }

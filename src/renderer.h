@@ -11,7 +11,12 @@
 #include <GLFW/glfw3.h>
 #include <glad/glad.h>
 #include <vector>
-
+struct BkEndSimpleTriangle
+{
+	alignas(16) glm::vec3 v0;
+	alignas(16) glm::vec3 v1;
+	alignas(16) glm::vec3 v2;
+};
 class Renderer
 {
 public:
@@ -24,6 +29,8 @@ public:
 	void updateUniforms(float currentTime);
 	void renderScene(float currentTime, float dt);
 	void handleResize();
+	void resetFrame();
+	void setAccumulation(bool accumulate);
 	Camera cam;
 
 private:
@@ -46,8 +53,31 @@ private:
 	ShaderStorage<Sphere> sphere_data;
 	ShaderStorage<BVHNode> bvh_data;
 	ShaderStorage<int> indices;
+	ShaderStorage<BkEndSimpleTriangle> simple_triangle_data;
 	float delta;
 	int dcounter;
+	bool accumulate;
+	float fov = 50.0f; // Default FOV in degrees
+
+	// --- Path tracing control uniforms ---
+	int accumulateBounces = 2;
+	int movingBounces = 2;
+	int accumulateSamples = 1;
+	int movingSamples = 1;
+
+public:
+	// Getters
+	int getAccumulateBounces() const { return accumulateBounces; }
+	int getMovingBounces() const { return movingBounces; }
+	int getAccumulateSamples() const { return accumulateSamples; }
+	int getMovingSamples() const { return movingSamples; }
+	float getFov() const { return fov; }
+	// Setters
+	void setAccumulateBounces(int val) { accumulateBounces = val; }
+	void setMovingBounces(int val) { movingBounces = val; }
+	void setAccumulateSamples(int val) { accumulateSamples = val; }
+	void setMovingSamples(int val) { movingSamples = val; }
+	void setFov(float val) { fov = val; }
 
 	void printGLVersion();
 	void setupShaders();
