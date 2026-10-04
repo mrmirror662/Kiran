@@ -55,10 +55,68 @@ if (MSVC)
     # Use the Multi-threaded DLL (/MD) or Multi-threaded Debug DLL (/MDd)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
+# glad provides the GL declarations; stop GLFW from pulling in the system GL headers.
+target_compile_definitions(PathTracingRenderer PUBLIC GLFW_INCLUDE_NONE)
+
 # Link libraries (specify the libraries you need here)
-target_link_libraries(PathTracingRenderer
-    glfw3
-)
+if (WIN32)
+    target_link_libraries(PathTracingRenderer glfw3)
+else()
+    find_package(glfw3 3.3 QUIET)
+    if (glfw3_FOUND)
+        target_link_libraries(PathTracingRenderer glfw)
+    else()
+        target_link_libraries(PathTracingRenderer glfw3)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# OpenGL context backend (see src/GLContext.h)
+#   OFF: native GLFW context (Windows/Linux).
+#   ON : headless OpenGL 4.6 via Mesa Zink + KosmicKrisp, frames shown through a
+#        tiny Apple-GL presenter. macOS only (needs `brew install mesa glfw`).
+# ---------------------------------------------------------------------------
+if (APPLE)
+    option(KIRAN_MESA_OFFSCREEN "Use Mesa Zink/KosmicKrisp for OpenGL 4.6 on macOS" ON)
+else()
+    set(KIRAN_MESA_OFFSCREEN OFF)
+endif()
+
+if (KIRAN_MESA_OFFSCREEN)
+    set(MESA_ROOT "" CACHE PATH "Mesa install prefix (defaults to Homebrew's)")
+    find_path(MESA_EGL_INCLUDE_DIR EGL/egl.h
+        HINTS ${MESA_ROOT}/include /opt/homebrew/opt/mesa/include /usr/local/opt/mesa/include)
+    find_library(MESA_EGL_LIBRARY EGL
+        HINTS ${MESA_ROOT}/lib /opt/homebrew/opt/mesa/lib /usr/local/opt/mesa/lib)
+    find_library(VULKAN_LOADER_LIBRARY vulkan HINTS /opt/homebrew/lib /usr/local/lib)
+    find_file(KOSMICKRISP_ICD
+        NAMES kosmickrisp_mesa_icd.aarch64.json kosmickrisp_mesa_icd.json
+        HINTS ${MESA_ROOT}/share/vulkan/icd.d /opt/homebrew/share/vulkan/icd.d /usr/local/share/vulkan/icd.d)
+
+    if (NOT MESA_EGL_INCLUDE_DIR OR NOT MESA_EGL_LIBRARY OR NOT VULKAN_LOADER_LIBRARY OR NOT KOSMICKRISP_ICD)
+        message(FATAL_ERROR "KIRAN_MESA_OFFSCREEN needs Mesa with Zink/KosmicKrisp: `brew install mesa`. "
+                            "Or configure with -DKIRAN_MESA_OFFSCREEN=OFF.")
+    endif()
+    message(STATUS "GL backend: Mesa offscreen (ICD: ${KOSMICKRISP_ICD})")
+
+    # After glad's include dir so glad's KHR headers stay first.
+    target_include_directories(PathTracingRenderer PRIVATE ${MESA_EGL_INCLUDE_DIR})
+    target_compile_definitions(PathTracingRenderer PRIVATE
+        KIRAN_MESA_OFFSCREEN
+        KIRAN_KOSMICKRISP_ICD="${KOSMICKRISP_ICD}"
+        IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+    # ImGui's built-in loader would bind Apple's GL; make it use glad (i.e. Mesa) instead.
+    set_source_files_properties(${PROJECT_SOURCE_DIR}/deps/imgui/imgui_impl_opengl3.cpp
+        PROPERTIES COMPILE_OPTIONS "-include;glad/glad.h")
+    target_link_libraries(PathTracingRenderer ${MESA_EGL_LIBRARY} "-framework OpenGL")
+
+    # Zink dlopens @rpath/libvulkan.1.dylib.
+    get_filename_component(MESA_LIB_DIR ${MESA_EGL_LIBRARY} DIRECTORY)
+    get_filename_component(VULKAN_LIB_DIR ${VULKAN_LOADER_LIBRARY} DIRECTORY)
+    set_target_properties(PathTracingRenderer PROPERTIES BUILD_RPATH "${MESA_LIB_DIR};${VULKAN_LIB_DIR}")
+else()
+    message(STATUS "GL backend: native GLFW context")
+endif()
 
 # Set platform-specific configurations
 if (WIN32)

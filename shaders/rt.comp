@@ -5,6 +5,11 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(binding = 0, rgba32f) uniform image2D outputImage;
 layout(binding = 1, rgba32f) uniform image2D prevFrame;
+// Adaptive sampling: rgb sums twice every odd-indexed sample (Cycles' auxiliary
+// half buffer); a = -1 once the pixel has converged, else its noise estimate / threshold.
+#ifndef LIGHT_TRACE
+layout(binding = 2, rgba32f) uniform image2D adaptiveAux;
+#endif
 
 // Uniforms (copied from rt.glsl)
 uniform float iTime;
@@ -16,38 +21,78 @@ uniform sampler2D screenTexture;
 uniform sampler2D hdri;
 //uniform float delta;
 uniform int sphere_size;
-uniform int bvh_size;
+uniform int tlas_size;
 uniform int accumulateBounces;
 uniform int movingBounces;
 uniform int accumulateSamples;
 uniform int movingSamples;
 uniform float fov;
+uniform float emissionScale; // temporary global multiplier on all emitters
+// Homogeneous fog in an axis-aligned box.
+uniform int fogEnabled;
+uniform vec3 fogMin;
+uniform vec3 fogMax;
+uniform mat4 fogToLocal; // rigid: render space -> the box's frame (fogMin / fogMax are there)
+uniform vec3 fogSigmaS;
+uniform vec3 fogSigmaA;
+uniform float fogG;
+uniform int useEquiangular;     // equiangular distance sampling for direct light in fog
+uniform int useCausticTracing;  // light tracing handles light -> glass -> (surface|fog) paths
+uniform int emit_light_count;   // lights covered by emitCdf
+uniform int delta_light_count;  // entries in deltaLights
+uniform float ltMinDist;        // light tracing only connects points at least this far from the camera
+uniform int ltDebugDirect;      // debug: light tracing handles direct light (L -> D -> camera) only
+uniform int tileWidth;          // thread-group tiling: tile width in groups (0: launch order)
+// Adaptive sampling: the camera pass accumulates in place (per-pixel sample counts in alpha)
+// and stops pixels whose noise estimate is low, or that reached adaptiveMaxSpp.
+uniform int adaptive;
+uniform float noiseThreshold;
+uniform int adaptiveMinSpp;
+uniform int adaptiveMaxSpp;
 uniform int debug_all_triangles;
+uniform int debugView;
+uniform int light_count;          // entries in the light table (directional first, then bounded)
+uniform int light_node_count;     // light-BVH nodes over the bounded lights
+uniform int infinite_light_count; // directional lights at the front of the table
+uniform int useNEE;                 // next-event estimation (light sampling) + MIS
+uniform int neeDepth;
+uniform int rrStart;                // Russian roulette from this vertex on (-1: off)               // light-sample only the first neeDepth vertices of a path // 0: path traced, 1: primary-ray traversal cost heat map
 uint seed = 0u;
 const float PI = 3.141592;
 
 #define M_PI 3.14159265358979323846
 
-void hash()
-{
-    seed *= uint(iTime);
-    seed ^= 2747636419u;
-    seed *= 2654435769u;
-    seed ^= seed >> 16;
-    seed *= 2654435769u;
-    seed ^= seed >> 16;
-    seed *= 2654435769u;
+// PCG hash (Jarzynski & Olano 2020, "Hash Functions for GPU Rendering").
+uint pcg_hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
 }
 
+// Per-pixel (or per-photon) offset for the stratified wavelength sequence (see sample_wavelength).
+float pixelWavelengthOffset = 0.0;
+
+// Seeds the per-thread stream from the pixel and the frame (hashed together: no wrap-around
+// reuse of earlier streams however long it runs); the light-tracing pass gets its own salt so
+// its photons are independent of the camera paths of the same pixel.
 void initRandomGenerator(vec2 fragCoord)
 {
-    seed = uint(fragCoord.y * iResolution.x + fragCoord.x) + uint(iFrame) * uint(iResolution.x) * uint(iResolution.y);
+    uint pixel = uint(fragCoord.y * iResolution.x + fragCoord.x);
+#ifdef LIGHT_TRACE
+    const uint salt = 0x68E31DA4u;
+#else
+    const uint salt = 0x1B56C4E9u;
+#endif
+    seed = pcg_hash(pixel ^ pcg_hash(uint(iFrame) ^ salt));
+    pixelWavelengthOffset = float(pcg_hash(pixel) >> 8) * (1.0 / 16777216.0);
 }
 
+// PCG step: advance the LCG state, output its permuted hash in [0, 1).
 float random()
 {
-    hash();
-    return float(seed) / 4294967295.0;
+    seed = seed * 747796405u + 2891336453u;
+    uint word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+    return float(((word >> 22u) ^ word) >> 8) * (1.0 / 16777216.0);
 }
 
 vec3 random_vec3()
@@ -141,6 +186,7 @@ struct Sphere
     vec3 center;
     float r;
     int matIndex;
+    int lightIndex;
 };
 
 struct Material
@@ -150,7 +196,14 @@ struct Material
     vec3 emission_color;
     float roughness;
     float emission_power;
-    float eta;
+    float eta;          // index of refraction (transmissive materials)
+    int emissionMap;
+    float transmission; // probability of the smooth dielectric lobe
+    vec3 sigma_a;       // volume absorption per unit length
+    int thinWalled;     // transmission without refraction or volume
+    float dispersion;   // 20 / Abbe number (0: none)
+    float alphaCutoff;  // glTF MASK cutoff
+    int alphaMode;      // 0 opaque, 1 MASK, 2 BLEND
 };
 
 struct BoundingBox
@@ -159,13 +212,18 @@ struct BoundingBox
     vec3 max_;
 };
 
+// Both child boxes inline (AccelerationStructure.h GPUBVHNode). Per child: count > 0 is a
+// leaf over primitives [ref, ref + count); count == 0 makes ref an interior node; ref == -1: none.
 struct BVHNode
 {
-    BoundingBox box;
-    int left; // Index of the left child
-    int right; // Index of the right child
-    int start; // Start index of triangles in this node
-    int end; // End index of triangles in this node
+    vec3 lmin;
+    int lref;
+    vec3 lmax;
+    int rref;
+    vec3 rmin;
+    int lcount;
+    vec3 rmax;
+    int rcount;
 };
 
 layout(binding = 6, std430) buffer ssbo1
@@ -193,9 +251,116 @@ layout(binding = 11, std430) buffer ssbo6
     sampler2D textureHandles[];
 };
 
+struct Instance
+{
+    mat4 objectToWorld;
+    mat4 worldToObject;
+    int blasRoot;
+    int materialOverride;
+    int lightIndexBase; // slice of lightIndexOf for emissive triangles, -1: none
+    int triStart;       // first triangle of the mesh
+};
+// Two-level acceleration: `bvh` holds every mesh's BLAS (object space),
+// `tlas` is built over instance world bounds; its leaves index `instances`.
+layout(binding = 12, std430) buffer ssbo7
+{
+    BVHNode tlas[];
+};
+
+BVHNode blas_node(int i) { return bvh[i]; }
+BVHNode tlas_node(int i) { return tlas[i]; }
+
+layout(binding = 13, std430) buffer ssbo8
+{
+    Instance instances[];
+};
+// Packed triangle positions (3 per triangle) for traversal; same order as `triangle`.
+layout(binding = 14, std430) readonly buffer ssbo9
+{
+    vec4 triVerts[];
+};
+// Light table (LightTable.h): directional lights first, then bounded lights reachable
+// through the light BVH.
+#define LIGHT_POINT 0
+#define LIGHT_SPOT 1
+#define LIGHT_DIRECTIONAL 2
+#define LIGHT_SPHERE 3
+#define LIGHT_TRIANGLE 4
+struct Light
+{
+    int type;
+    int instance;   // triangle: GPU instance; sphere: sphere index
+    int tri;        // triangle: global triangle index
+    int bitTrail;   // root-to-leaf path in the light BVH (bit i: 0 left, 1 right)
+    vec4 posA;      // position / sphere center; w: sphere radius or spot cos(inner)
+    vec4 dirB;      // direction light travels; w: spot cos(outer)
+    vec4 emit;      // intensity / irradiance / radiance
+};
+layout(binding = 15, std430) readonly buffer ssbo10
+{
+    Light lights[];
+};
+// Light BVH: left child = next node, childOrLight = right child (or light index at a leaf).
+struct LightNode
+{
+    vec4 boundsMinPhi;   // w: power
+    vec4 boundsMaxCosO;  // w: cos(theta_o) of the normal cone
+    vec4 axisCosE;       // w: cos(theta_e) emission spread
+    int childOrLight;
+    int flags;           // bit 0: leaf, bit 1: two-sided
+    int pad0;
+    int pad1;
+};
+layout(binding = 16, std430) readonly buffer ssbo11
+{
+    LightNode lightNodes[];
+};
+// Per-instance slices mapping BLAS triangles to light indices (-1: not emissive).
+layout(binding = 17, std430) readonly buffer ssbo12
+{
+    int lightIndexOf[];
+};
+// Power CDF over `lights` for emitting light paths (directional lights excluded).
+layout(binding = 18, std430) readonly buffer ssbo13
+{
+    float emitCdf[];
+};
+// Light-tracing splats: per-pixel RGB in fixed point (CAUSTIC_SCALE units), resolved and
+// cleared by the camera pass each frame.
+#define CAUSTIC_SCALE 4096.0
+// Point / spot / directional light indices, for light sampling below neeDepth.
+layout(binding = 20, std430) readonly buffer ssbo15
+{
+    int deltaLights[];
+};
+layout(binding = 19, std430) buffer ssbo14
+{
+    uint causticAccum[];
+};
+// Photon merging for caustics seen through glass, in one buffer (this GL stack allows only 16
+// storage blocks per compute shader): [0] photon count, [1] adaptive sampling's unconverged
+// pixels in the current tile, [2, 2 + photonGridSize) hash-grid list heads, then 13-word
+// photon records.
+layout(binding = 22, std430) buffer PhotonMap
+{
+    uint photonBuf[];
+};
+uniform int usePhotonMerging;
+uniform float photonRadius;   // current gather radius (shrinks over frames)
+uniform uint photonGridSize;  // power of two
+uniform uint photonCapacity;  // records available
+uniform float photonsEmitted; // light paths traced per frame (normalizes the estimate)
+#define PHOTON_NONE 0xFFFFFFFFu
+#define PHOTON_WORDS 13u
+
+uint photon_cell(ivec3 c) {
+    return pcg_hash(uint(c.x) ^ pcg_hash(uint(c.y) ^ pcg_hash(uint(c.z)))) & (photonGridSize - 1u);
+}
+
+
 vec3 get_emission(Material m)
 {
-    return m.emission_color * m.emission_power;
+    return m.emission_color * m.emission_power * emissionScale;
 }
 vec2 RayDirectionToUV(vec3 raydir) {
     // Step 1: Normalize the Ray Direction
@@ -222,7 +387,7 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
     vec3 h = cross(rd, edge2);
     float a = dot(edge1, h);
 
-    if (abs(a) < 0.0001)
+    if (abs(a) < 1e-12) // only reject (near-)parallel rays; det scales with triangle area
         return -1.0;
 
     float f = 1.0 / a;
@@ -245,15 +410,8 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
         vec3 faceNormal = normalize(cross(edge1, edge2));
         float w = 1.0 - u - v;
 
-        // Always interpolate UV coordinates if texture data is available
-        if (hasTexture)
-        {
-            interpolatedUv = u * uv1 + v * uv2 + w * uv0;
-        }
-        else
-        {
-            interpolatedUv = vec2(0, 0);
-        }
+        // UVs are zero when the mesh has none; base-color and emissive maps both use them.
+        interpolatedUv = u * uv1 + v * uv2 + w * uv0;
 
         // Always interpolate normals if normal data is available
         if (hasNormal)
@@ -277,14 +435,15 @@ float intersectTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, vec3 n0, ve
     }
     return -1.0;
 }
-// Lightweight triangle intersection: only returns t, no normal/uv interpolation
-float intersectTriangleSimple(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2)
+// Lightweight triangle intersection: returns t and the barycentrics (u, v) of v1, v2
+float intersectTriangleSimple(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, out vec2 bary)
 {
+    bary = vec2(0.0);
     vec3 edge1 = v1 - v0;
     vec3 edge2 = v2 - v0;
     vec3 h = cross(rd, edge2);
     float a = dot(edge1, h);
-    if (abs(a) < 0.0001)
+    if (abs(a) < 1e-12) // only reject (near-)parallel rays; det scales with triangle area
         return -1.0;
     float f = 1.0 / a;
     vec3 s = ro - v0;
@@ -296,6 +455,7 @@ float intersectTriangleSimple(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2)
     if (v < 0.0 || u + v > 1.0)
         return -1.0;
     float t = f * dot(edge2, q);
+    bary = vec2(u, v);
     if (t > 0.0001)
         return t;
     return -1.0;
@@ -309,7 +469,7 @@ float get_t(vec3 ray_origin, vec3 ray_dir, vec3 center, float r)
     float c = dot(oc, oc) - r * r;
     float d = b * b - 4.0 * a * c;
 
-    if (d < 0.01f)
+    if (d < 0.0) // discriminant scales with radius; only reject true misses
         return -1.0;
 
     float sqrt_d = sqrt(d);
@@ -325,8 +485,9 @@ float get_t(vec3 ray_origin, vec3 ray_dir, vec3 center, float r)
 }
 // Update intersectBox to take rayinv as argument
 bool intersectBox(vec3 ray_origin, vec3 ray_dir, vec3 rayinv, vec3 min_, vec3 max_, out float tmin, out float tmax) {
-    vec3 t0s = (min_ - ray_origin) * rayinv;
-    vec3 t1s = (max_ - ray_origin) * rayinv;
+    vec3 oinv = ray_origin * rayinv;
+    vec3 t0s = fma(min_, rayinv, -oinv);
+    vec3 t1s = fma(max_, rayinv, -oinv);
     vec3 tSmall = min(t0s, t1s);
     vec3 tLarge = max(t0s, t1s);
     float epsilon = 0.0001;
@@ -340,95 +501,1055 @@ struct HitInfo
     float t;
     int index;
     bool is_sphere;
+    int instance;
 };
 
-// Function to find the closest sphere/triangle intersection (refactored)
-HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, vec3 rayinv, out int intersects) {
-    float min_t = 1e30;
+// Tests a BLAS leaf's triangles; returns true when anyHit found an occluder.
+// Alpha test for flagged triangles (triVerts[3 i].w): MASK keeps the hit where the base
+// color alpha reaches the cutoff; BLEND keeps it with probability alpha (unbiased coverage).
+bool alpha_passes(int i, vec2 bary, float flag) {
+    vec2 uv = (1.0 - bary.x - bary.y) * triangle[i].uv0 + bary.x * triangle[i].uv1 + bary.y * triangle[i].uv2;
+    float a = textureLod(textureHandles[triangle[i].colourMapIndex], uv, 0.0).a;
+    return flag > 0.0 ? a >= flag : random() < a;
+}
+
+bool intersect_leaf(vec3 ro, vec3 rd, int first, int count, bool anyHit, inout float best_t, inout int best_tri, inout int intersects) {
+    for (int i = first; i < first + count; ++i) {
+        vec4 p0 = triVerts[3 * i];
+        vec2 bary;
+        float t = intersectTriangleSimple(ro, rd, p0.xyz, triVerts[3 * i + 1].xyz, triVerts[3 * i + 2].xyz, bary);
+        intersects++;
+        if (t > 0.0 && t < best_t && (p0.w == 0.0 || alpha_passes(i, bary, p0.w))) {
+            best_t = t;
+            best_tri = i;
+            if (anyHit)
+                return true;
+        }
+    }
+    return false;
+}
+
+// Closest hit within one BLAS. The ray is in object space; its direction is not
+// normalized, so t stays in world units and is comparable across instances.
+// The instance's bounds were already tested in the TLAS, so traversal starts at the root.
+// Each node holds both child boxes: leaf children are tested immediately, interior ones
+// pushed far-then-near with their entry distance (cheap cull when popped).
+void traverse_blas(vec3 ro, vec3 rd, vec3 rinv, int root, bool anyHit, inout float best_t, inout int best_tri, inout int intersects) {
+    int stack[32];
+    stack[0] = root;
+    int stack_top = 1;
+    while (stack_top > 0) {
+        --stack_top;
+        BVHNode n = blas_node(stack[stack_top]);
+        float tl, tr, tfar;
+        bool hl = n.lref >= 0 && intersectBox(ro, rd, rinv, n.lmin, n.lmax, tl, tfar) && tl < best_t;
+        bool hr = n.rref >= 0 && intersectBox(ro, rd, rinv, n.rmin, n.rmax, tr, tfar) && tr < best_t;
+        intersects += 2;
+        bool leafL = hl && n.lcount > 0, leafR = hr && n.rcount > 0;
+        bool rightFirst = leafR && (!leafL || tr < tl);
+        for (int k = 0; k < 2; ++k) {
+            bool right = (k == 0) == rightFirst;
+            if (!(right ? leafR : leafL) || (right ? tr : tl) > best_t)
+                continue;
+            if (intersect_leaf(ro, rd, right ? n.rref : n.lref, right ? n.rcount : n.lcount, anyHit, best_t, best_tri, intersects))
+                return;
+        }
+        hl = hl && !leafL;
+        hr = hr && !leafR;
+        if (hl && hr) {
+            bool leftFirst = tl < tr;
+            stack[stack_top] = leftFirst ? n.rref : n.lref;
+            ++stack_top;
+            stack[stack_top] = leftFirst ? n.lref : n.rref;
+            ++stack_top;
+        } else if (hl) {
+            stack[stack_top] = n.lref;
+            ++stack_top;
+        } else if (hr) {
+            stack[stack_top] = n.rref;
+            ++stack_top;
+        }
+    }
+}
+
+// Tests the instances of a TLAS leaf by re-casting the ray into each one's object space.
+bool intersect_instances(vec3 ray_origin, vec3 ray_dir, int first, int count, bool anyHit, inout float min_t, inout int min_index, inout int min_instance, inout int intersects) {
+    for (int i = first; i < first + count; ++i) {
+        mat4 w2o = instances[i].worldToObject;
+        vec3 ro = (w2o * vec4(ray_origin, 1.0)).xyz;
+        vec3 rd = mat3(w2o) * ray_dir;
+        int tri = -1;
+        traverse_blas(ro, rd, 1.0 / rd, instances[i].blasRoot, anyHit, min_t, tri, intersects);
+        if (tri != -1) {
+            min_index = tri;
+            min_instance = i;
+            if (anyHit)
+                return true;
+        }
+    }
+    return false;
+}
+
+// Closest sphere/triangle hit. Walks the TLAS in world space and, per instance,
+// re-casts the ray in object space into that instance's BLAS.
+// tmax bounds the search; anyHit returns the first occluder found (shadow rays).
+HitInfo find_closest(vec3 ray_origin, vec3 ray_dir, vec3 rayinv, float tmax, bool anyHit, out int intersects) {
+    float min_t = tmax;
     int min_index = -1;
-    bool is_sphere = true;
+    int min_instance = -1;
     intersects = 0;
     for (int i = 0; i < sphere_size; ++i) {
         float t = get_t(ray_origin, ray_dir, spheres[i].center, spheres[i].r);
         if (t > 0.0 && t < min_t) {
             min_t = t;
             min_index = i;
-            is_sphere = true;
+            if (anyHit)
+                return HitInfo(min_t, min_index, true, -1);
         }
     }
+    int sphere_index = min_index;
+
     int stack[32];
     int stack_top = 0;
-    float tri_min_t = min_t;
-    int tri_min_index = -1;
-    if (bvh_size > 0) {
-        stack[stack_top++] = 0;
+    if (tlas_size > 0) {
+        stack[0] = 0;
+        stack_top = 1;
     }
     while (stack_top > 0) {
-        int index = stack[--stack_top];
-        BVHNode node = bvh[index];
-        float tmin, tmax;
-        if (!intersectBox(ray_origin, ray_dir, rayinv, node.box.min_, node.box.max_, tmin, tmax) || tmin > tri_min_t) {
-            continue;
+        --stack_top;
+        BVHNode n = tlas_node(stack[stack_top]);
+        float tl, tr, tfar;
+        bool hl = n.lref >= 0 && intersectBox(ray_origin, ray_dir, rayinv, n.lmin, n.lmax, tl, tfar) && tl < min_t;
+        bool hr = n.rref >= 0 && intersectBox(ray_origin, ray_dir, rayinv, n.rmin, n.rmax, tr, tfar) && tr < min_t;
+        intersects += 2;
+        // Leaf children (instances) are visited nearer-first from a single call site,
+        // keeping the inlined BLAS traversal to one copy.
+        bool leafL = hl && n.lcount > 0, leafR = hr && n.rcount > 0;
+        bool rightFirst = leafR && (!leafL || tr < tl);
+        for (int k = 0; k < 2; ++k) {
+            bool right = (k == 0) == rightFirst;
+            if (!(right ? leafR : leafL) || (right ? tr : tl) > min_t)
+                continue;
+            if (intersect_instances(ray_origin, ray_dir, right ? n.rref : n.lref, right ? n.rcount : n.lcount, anyHit, min_t, min_index, min_instance, intersects))
+                return HitInfo(min_t, min_index, false, min_instance);
         }
-        bool is_leaf = (node.left == -1 && node.right == -1);
-        if (is_leaf) {
-            for (int i = node.start; i < node.end; ++i) {
-               // int idx = indices[i];
-                float t = intersectTriangleSimple(ray_origin, ray_dir, triangle[i].v0, triangle[i].v1, triangle[i].v2);
-                intersects++; // triangle test
-                if (t > 0.0 && t < tri_min_t) {
-                    tri_min_t = t;
-                    //tri_min_index = idx;
-                    tri_min_index = i;
-                }
-            }
+        hl = hl && !leafL;
+        hr = hr && !leafR;
+        if (hl && hr) {
+            bool leftFirst = tl < tr;
+            stack[stack_top] = leftFirst ? n.rref : n.lref;
+            ++stack_top;
+            stack[stack_top] = leftFirst ? n.lref : n.rref;
+            ++stack_top;
+        } else if (hl) {
+            stack[stack_top] = n.lref;
+            ++stack_top;
+        } else if (hr) {
+            stack[stack_top] = n.rref;
+            ++stack_top;
+        }
+    }
+    bool is_sphere = min_instance == -1;
+    return HitInfo(min_t, is_sphere ? sphere_index : min_index, is_sphere, min_instance);
+}
+
+float luminance(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+int instance_material(int inst, int tri) {
+    int o = instances[inst].materialOverride;
+    return o >= 0 ? o : triangle[tri].matIndex;
+}
+
+void world_triangle(int inst, int tri, out vec3 p0, out vec3 p1, out vec3 p2) {
+    mat4 o2w = instances[inst].objectToWorld;
+    p0 = (o2w * vec4(triVerts[3 * tri].xyz, 1.0)).xyz;
+    p1 = (o2w * vec4(triVerts[3 * tri + 1].xyz, 1.0)).xyz;
+    p2 = (o2w * vec4(triVerts[3 * tri + 2].xyz, 1.0)).xyz;
+}
+
+// Solid-angle pdf of sampling the cone subtended by a sphere from x (0 if inside).
+float sphere_cone_pdf(vec3 x, vec3 center, float radius) {
+    vec3 dc = center - x;
+    float d2 = dot(dc, dc);
+    if (d2 <= radius * radius)
+        return 0.0;
+    float cosMax = sqrt(max(0.0, 1.0 - radius * radius / d2));
+    return 1.0 / (2.0 * PI * (1.0 - cosMax));
+}
+
+// cos/sin of max(0, a - b) given the cosines and sines of angles a and b.
+float cos_sub_clamped(float sa, float ca, float sb, float cb) { return ca > cb ? 1.0 : ca * cb + sa * sb; }
+float sin_sub_clamped(float sa, float ca, float sb, float cb) { return ca > cb ? 0.0 : sa * cb - ca * sb; }
+
+// Conservative estimate of a light cluster's contribution at p with normal n
+// (pbrt-v4 LightBounds::Importance): power / distance^2, reduced by the angle between
+// the cluster's emission cone and p, and by the cosine at the receiving surface.
+float light_node_importance(int nodeIndex, vec3 p, vec3 n) {
+    LightNode node = lightNodes[nodeIndex];
+    vec3 bmin = node.boundsMinPhi.xyz, bmax = node.boundsMaxCosO.xyz;
+    float phi = node.boundsMinPhi.w;
+    float cosTheta_o = node.boundsMaxCosO.w;
+    float cosTheta_e = node.axisCosE.w;
+    vec3 pc = 0.5 * (bmin + bmax);
+    float dist2 = dot(p - pc, p - pc);
+    float d2 = max(dist2, length(bmax - bmin) * 0.5);
+
+    vec3 wi = normalize(p - pc);
+    float cosTheta_w = dot(node.axisCosE.xyz, wi);
+    if ((node.flags & 2) != 0)
+        cosTheta_w = abs(cosTheta_w);
+    float sinTheta_w = sqrt(max(0.0, 1.0 - cosTheta_w * cosTheta_w));
+
+    // Cone of directions from p that the bounds subtend.
+    float r2 = dot(bmax - bmin, bmax - bmin) * 0.25;
+    float cosTheta_b = dist2 < r2 ? -1.0 : sqrt(max(0.0, 1.0 - r2 / dist2));
+    float sinTheta_b = sqrt(max(0.0, 1.0 - cosTheta_b * cosTheta_b));
+
+    // Angle between the emission cone and p, minus the cone and the bounds' extent.
+    float sinTheta_o = sqrt(max(0.0, 1.0 - cosTheta_o * cosTheta_o));
+    float cosTheta_x = cos_sub_clamped(sinTheta_w, cosTheta_w, sinTheta_o, cosTheta_o);
+    float sinTheta_x = sin_sub_clamped(sinTheta_w, cosTheta_w, sinTheta_o, cosTheta_o);
+    float cosTheta_p = cos_sub_clamped(sinTheta_x, cosTheta_x, sinTheta_b, cosTheta_b);
+    if (cosTheta_p <= cosTheta_e)
+        return 0.0;
+    float importance = phi * cosTheta_p / d2;
+
+    // Receiving-surface cosine, loosened by the bounds' extent (none in a medium: n = 0).
+    if (dot(n, n) > 0.0) {
+        float cosTheta_i = abs(dot(wi, n));
+        float sinTheta_i = sqrt(max(0.0, 1.0 - cosTheta_i * cosTheta_i));
+        importance *= cos_sub_clamped(sinTheta_i, cosTheta_i, sinTheta_b, cosTheta_b);
+    }
+    return max(importance, 0.0);
+}
+
+float infinite_light_prob() {
+    if (infinite_light_count == 0)
+        return 0.0;
+    return float(infinite_light_count) / float(infinite_light_count + (light_node_count > 0 ? 1 : 0));
+}
+
+// Directional lights with an angular size (dirB.w = cos of the half-angle, 0: delta) are discs
+// at infinity: uniform radiance over the cone, normalized so the irradiance at normal
+// incidence is the light's `emit` (E = L pi sin^2 theta).
+vec3 sun_radiance(Light L) {
+    return L.emit.rgb * emissionScale / (PI * max(1.0 - L.dirB.w * L.dirB.w, 1e-12));
+}
+float sun_cone_pdf(Light L) {
+    return 1.0 / (2.0 * PI * (1.0 - L.dirB.w));
+}
+vec3 sample_sun_dir(Light L) {
+    float cosT = 1.0 - random() * (1.0 - L.dirB.w);
+    float sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+    float phi = 2.0 * PI * random();
+    vec3 w = -L.dirB.xyz;
+    vec3 a = normalize(cross(abs(w.x) > 0.1 ? vec3(0, 1, 0) : vec3(1, 0, 0), w));
+    vec3 b = cross(w, a);
+    return normalize(a * (cos(phi) * sinT) + b * (sin(phi) * sinT) + w * cosT);
+}
+
+// Picks a light for shading point (p, n) with one random number; -1 if none.
+int sample_light_index(vec3 p, vec3 n, out float pmf) {
+    float u = random();
+    float pInf = infinite_light_prob();
+    if (u < pInf) {
+        int k = min(int(u / pInf * float(infinite_light_count)), infinite_light_count - 1);
+        pmf = pInf / float(infinite_light_count);
+        return k;
+    }
+    if (light_node_count == 0)
+        return -1;
+    u = min((u - pInf) / (1.0 - pInf), 0.99999994);
+    pmf = 1.0 - pInf;
+    int node = 0;
+    for (int depth = 0; depth < 64; ++depth) {
+        LightNode nd = lightNodes[node];
+        if ((nd.flags & 1) != 0)
+            return (node > 0 || light_node_importance(node, p, n) > 0.0) ? nd.childOrLight : -1;
+        float c0 = light_node_importance(node + 1, p, n);
+        float c1 = light_node_importance(nd.childOrLight, p, n);
+        if (c0 == 0.0 && c1 == 0.0)
+            return -1;
+        float p0 = c0 / (c0 + c1);
+        if (u < p0) {
+            u = min(u / p0, 0.99999994);
+            pmf *= p0;
+            node = node + 1;
         } else {
-            int left = node.left;
-            int right = node.right;
-            float tminL, tmaxL;
-            float tminR, tmaxR;
-            bool hitL = (left != -1) && intersectBox(ray_origin, ray_dir, rayinv, bvh[left].box.min_, bvh[left].box.max_, tminL, tmaxL) && tminL < tri_min_t;
-            bool hitR = (right != -1) && intersectBox(ray_origin, ray_dir, rayinv, bvh[right].box.min_, bvh[right].box.max_, tminR, tmaxR) && tminR < tri_min_t;
-            intersects += int(hitL) + int(hitR); // bbox tests
-            if (hitL && hitR) {
-                if (tminL < tminR) {
-                    stack[stack_top++] = right;
-                    stack[stack_top++] = left;
-                } else {
-                    stack[stack_top++] = left;
-                    stack[stack_top++] = right;
-                }
-            } else if (hitL) {
-                stack[stack_top++] = left;
-            } else if (hitR) {
-                stack[stack_top++] = right;
-            }
+            u = min((u - p0) / (1.0 - p0), 0.99999994);
+            pmf *= 1.0 - p0;
+            node = nd.childOrLight;
         }
     }
-    if (tri_min_index != -1 && tri_min_t < min_t) {
-        min_t = tri_min_t;
-        min_index = tri_min_index;
-        is_sphere = false;
+    return -1;
+}
+
+// Probability that sample_light_index(p, n) returns this light (follows its bit trail).
+float light_pmf(vec3 p, vec3 n, int lightIndex) {
+    if (lightIndex < infinite_light_count)
+        return infinite_light_prob() / float(infinite_light_count);
+    float pmf = 1.0 - infinite_light_prob();
+    uint trail = uint(lights[lightIndex].bitTrail);
+    int node = 0;
+    for (int depth = 0; depth < 64; ++depth) {
+        LightNode nd = lightNodes[node];
+        if ((nd.flags & 1) != 0)
+            return pmf;
+        float c0 = light_node_importance(node + 1, p, n);
+        float c1 = light_node_importance(nd.childOrLight, p, n);
+        if (c0 + c1 <= 0.0)
+            return 0.0;
+        bool right = (trail & 1u) != 0u;
+        pmf *= (right ? c1 : c0) / (c0 + c1);
+        node = right ? nd.childOrLight : node + 1;
+        trail >>= 1;
     }
-    return HitInfo(min_t, min_index, is_sphere);
+    return pmf;
+}
+
+// Samples one light (light BVH importance at x with normal n) and a direction to it.
+//   wi/dist: direction and shadow-ray length; Li: radiance arriving along wi (for delta
+//   lights: intensity / d^2 or irradiance); pdf: solid-angle pdf including selection
+//   (selection probability only for delta lights). Returns false if it contributes nothing.
+bool sample_light(vec3 x, vec3 n, out vec3 wi, out float dist, out vec3 Li, out float pdf, out bool isDelta) {
+    float pSel;
+    int li = sample_light_index(x, n, pSel);
+    if (li < 0 || pSel <= 0.0)
+        return false;
+    Light L = lights[li];
+    isDelta = L.type <= LIGHT_DIRECTIONAL && !(L.type == LIGHT_DIRECTIONAL && L.dirB.w > 0.0);
+
+    if (L.type == LIGHT_POINT || L.type == LIGHT_SPOT) {
+        vec3 toL = L.posA.xyz - x;
+        float d2 = dot(toL, toL);
+        dist = sqrt(d2);
+        wi = toL / dist;
+        Li = L.emit.rgb * emissionScale / d2;
+        if (L.type == LIGHT_SPOT)
+            Li *= smoothstep(L.dirB.w, L.posA.w, dot(-wi, L.dirB.xyz));
+        pdf = pSel;
+        return true;
+    }
+    if (L.type == LIGHT_DIRECTIONAL) {
+        dist = 1e30;
+        if (L.dirB.w > 0.0) { // sized sun: uniform over its cone
+            wi = sample_sun_dir(L);
+            Li = sun_radiance(L);
+            pdf = pSel * sun_cone_pdf(L);
+            return true;
+        }
+        wi = -L.dirB.xyz;
+        Li = L.emit.rgb * emissionScale;
+        pdf = pSel;
+        return true;
+    }
+    if (L.type == LIGHT_SPHERE) {
+        // Uniform sampling of the cone the sphere subtends.
+        vec3 c = L.posA.xyz;
+        float r = L.posA.w;
+        vec3 dc = c - x;
+        float d2 = dot(dc, dc);
+        if (d2 <= r * r)
+            return false;
+        float cosMax = sqrt(max(0.0, 1.0 - r * r / d2));
+        float cosT = 1.0 - random() * (1.0 - cosMax);
+        float sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+        float phi = 2.0 * PI * random();
+        vec3 w = dc * inversesqrt(d2);
+        vec3 a = normalize(cross(abs(w.x) > 0.1 ? vec3(0, 1, 0) : vec3(1, 0, 0), w));
+        vec3 b = cross(w, a);
+        wi = normalize(a * (cos(phi) * sinT) + b * (sin(phi) * sinT) + w * cosT);
+        dist = get_t(x, wi, c, r);
+        if (dist <= 0.0)
+            return false;
+        Li = get_emission(materials[spheres[L.instance].matIndex]);
+        pdf = pSel / (2.0 * PI * (1.0 - cosMax));
+        return true;
+    }
+    // Emissive triangle: uniform point on its world-space surface.
+    vec3 p0, p1, p2;
+    world_triangle(L.instance, L.tri, p0, p1, p2);
+    float r1 = sqrt(random());
+    float r2 = random();
+    float b0 = 1.0 - r1, b1 = r1 * (1.0 - r2), b2 = r1 * r2;
+    vec3 p = b0 * p0 + b1 * p1 + b2 * p2;
+    vec3 cr = cross(p1 - p0, p2 - p0);
+    float area = 0.5 * length(cr);
+    vec3 toL = p - x;
+    float d2 = dot(toL, toL);
+    dist = sqrt(d2);
+    wi = toL / dist;
+    float cosL = abs(dot(cr / (2.0 * area), wi));
+    if (cosL < 1e-6)
+        return false;
+    Material m = materials[instance_material(L.instance, L.tri)];
+    if (m.emissionMap >= 0) {
+        Triangle th = triangle[L.tri];
+        m.emission_color *= texture(textureHandles[m.emissionMap], b0 * th.uv0 + b1 * th.uv1 + b2 * th.uv2).rgb;
+    }
+    Li = get_emission(m);
+    pdf = pSel / area * d2 / cosL;
+    return true;
+}
+
+// Below neeDepth only delta lights need light sampling (BSDF rays can't hit them), so pick
+// one uniformly from the small delta list instead of walking the light BVH.
+bool sample_delta_light(vec3 x, out vec3 wi, out float dist, out vec3 Li, out float pdf) {
+    int k = min(int(random() * float(delta_light_count)), delta_light_count - 1);
+    Light L = lights[deltaLights[k]];
+    pdf = 1.0 / float(delta_light_count);
+    if (L.type == LIGHT_DIRECTIONAL) {
+        wi = -L.dirB.xyz;
+        dist = 1e30;
+        Li = L.emit.rgb * emissionScale;
+        return true;
+    }
+    vec3 toL = L.posA.xyz - x;
+    float d2 = dot(toL, toL);
+    dist = sqrt(d2);
+    wi = toL / dist;
+    Li = L.emit.rgb * emissionScale / d2;
+    if (L.type == LIGHT_SPOT)
+        Li *= smoothstep(L.dirB.w, L.posA.w, dot(-wi, L.dirB.xyz));
+    return true;
+}
+
+vec3 uniform_sphere_dir() {
+    float z = 1.0 - 2.0 * random();
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    float phi = 2.0 * PI * random();
+    return vec3(r * cos(phi), r * sin(phi), z);
+}
+
+
+// ---------------------------------------------------------------------------------------
+// Spectral dispersion. A path samples a wavelength the first time it meets dispersive glass;
+// its RGB throughput is then weighted by that wavelength's colour (CIE 1931 via the Wyman et
+// al. 2013 analytic fit, to linear sRGB, clamped, normalised so white averages to white).
+// ---------------------------------------------------------------------------------------
+uniform vec3 spectralNorm; // integral of the clamped sRGB colour over [360, 830] nm
+
+float cie_lobe(float l, float mu, float s1, float s2) {
+    float t = (l - mu) / (l < mu ? s1 : s2);
+    return exp(-0.5 * t * t);
+}
+
+vec3 wavelength_rgb(float l) {
+    float x = 1.056 * cie_lobe(l, 599.8, 37.9, 31.0) + 0.362 * cie_lobe(l, 442.0, 16.0, 26.7) - 0.065 * cie_lobe(l, 501.1, 20.4, 26.2);
+    float y = 0.821 * cie_lobe(l, 568.8, 46.9, 40.5) + 0.286 * cie_lobe(l, 530.9, 16.3, 31.1);
+    float z = 1.217 * cie_lobe(l, 437.0, 11.8, 36.0) + 0.681 * cie_lobe(l, 459.0, 26.0, 13.8);
+    vec3 rgb = vec3(3.2406 * x - 1.5372 * y - 0.4986 * z,
+                    -0.9689 * x + 1.8758 * y + 0.0415 * z,
+                    0.0557 * x - 0.2040 * y + 1.0570 * z);
+    return max(rgb, vec3(0.0)) / spectralNorm;
+}
+
+// Wavelength for a path that meets dispersive glass (pbrt-v4 SampleVisibleWavelengths):
+// importance-sampled towards the eye's sensitivity on [360, 830] nm, with the random number
+// a per-pixel rotation of a golden-ratio sequence over frames (each sample stays uniform, so
+// the estimate is unbiased, but consecutive frames sweep the spectrum evenly). Returns the
+// wavelength; `weight` is its colour / pdf, white-balanced (its mean over wavelengths is 1).
+float sample_wavelength(out vec3 weight) {
+    float u = fract(pixelWavelengthOffset + float(iFrame) * 0.6180339887);
+    float lambda = 538.0 - 138.888889 * atanh(0.85691062 - 1.82750197 * u);
+    float c = cosh(0.0072 * (lambda - 538.0));
+    float pdf = 0.0039398042 / (c * c);
+    weight = wavelength_rgb(lambda) / pdf;
+    return lambda;
+}
+
+// KHR_materials_dispersion: n(lambda) from n_d and the Abbe number V = 20 / dispersion.
+float dispersive_ior(float nd, float dispersion, float lambda) {
+    if (dispersion <= 0.0 || lambda <= 0.0)
+        return nd;
+    float V = 20.0 / dispersion;
+    return max(nd + (nd - 1.0) / V * (523655.0 / (lambda * lambda) - 1.5168), 1.0);
+}
+
+// Unpolarized Fresnel reflectance of a smooth dielectric; etaRatio = eta_incident / eta_transmitted.
+float fresnel_dielectric(float cosI, float etaRatio) {
+    float sin2T = etaRatio * etaRatio * (1.0 - cosI * cosI);
+    if (sin2T >= 1.0)
+        return 1.0; // total internal reflection
+    float cosT = sqrt(1.0 - sin2T);
+    float rs = (etaRatio * cosI - cosT) / (etaRatio * cosI + cosT);
+    float rp = (cosI - etaRatio * cosT) / (cosI + etaRatio * cosT);
+    return 0.5 * (rs * rs + rp * rp);
+}
+
+// ---------------------------------------------------------------------------------------
+// Homogeneous fog: box overlap, transmittance, Henyey-Greenstein phase function.
+// ---------------------------------------------------------------------------------------
+// Overlap [t0, t1] of a ray (unit direction) with the fog box, clipped to [0, tmax].
+bool fog_overlap(vec3 o, vec3 d, float tmax, out float t0, out float t1) {
+    // Into the box's frame (rigid, so distances along the ray are unchanged).
+    vec3 lo_ = (fogToLocal * vec4(o, 1.0)).xyz, ld = mat3(fogToLocal) * d;
+    vec3 inv = 1.0 / ld;
+    vec3 a = (fogMin - lo_) * inv, b = (fogMax - lo_) * inv;
+    vec3 lo = min(a, b), hi = max(a, b);
+    t0 = max(max(max(lo.x, lo.y), lo.z), 0.0);
+    t1 = min(min(min(hi.x, hi.y), hi.z), tmax);
+    return t1 > t0;
+}
+
+vec3 fog_transmittance(vec3 o, vec3 d, float tmax) {
+    float t0, t1;
+    if (fogEnabled == 0 || !fog_overlap(o, d, tmax, t0, t1))
+        return vec3(1.0);
+    return exp(-(fogSigmaS + fogSigmaA) * (t1 - t0));
+}
+
+void make_basis(vec3 n, out vec3 t, out vec3 b);
+
+// HG phase for the angle between the propagation direction and the scattered direction.
+float hg_phase(float cosTheta, float g) {
+    float d = 1.0 + g * g - 2.0 * g * cosTheta;
+    return (1.0 - g * g) / (4.0 * PI * d * sqrt(d));
+}
+
+// Samples a scattered direction around dirIn proportionally to the HG phase.
+vec3 sample_hg(vec3 dirIn, float g) {
+    float u = random();
+    float cosTheta;
+    if (abs(g) < 1e-3) {
+        cosTheta = 1.0 - 2.0 * u;
+    } else {
+        float sq = (1.0 - g * g) / (1.0 + g - 2.0 * g * u);
+        cosTheta = (1.0 + g * g - sq * sq) / (2.0 * g);
+    }
+    float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    float phi = 2.0 * PI * random();
+    vec3 t, b;
+    make_basis(dirIn, t, b);
+    return normalize(t * (sinTheta * cos(phi)) + b * (sinTheta * sin(phi)) + dirIn * cosTheta);
+}
+
+// Direct in-scattering along the fog part [t0, t1] of a segment: pick a light and a point on
+// it, then sample the distance equiangularly around that point (Kulla & Fajardo 2012). Returns
+// a shadow ray to trace and the contribution it carries if unoccluded.
+bool equiangular_direct(vec3 o, vec3 dir, float t0, float t1, vec3 beta, out vec3 so, out vec3 sd, out float smax, out vec3 value);
+
+// ---------------------------------------------------------------------------------------
+// Microfacet BSDF: GGX / Trowbridge-Reitz with separable Smith masking, glTF metallic-
+// roughness model. Vectors are world space; n faces the side wo is on.
+// ---------------------------------------------------------------------------------------
+float ggx_alpha(float roughness) { return max(roughness * roughness, 0.002); }
+
+float ggx_D(float NdotH, float a2) {
+    float d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d);
+}
+
+float smith_G1(float NdotV, float a2) {
+    NdotV = max(NdotV, 1e-6);
+    return 2.0 * NdotV / (NdotV + sqrt(a2 + (1.0 - a2) * NdotV * NdotV));
+}
+
+// Orthonormal basis around n (Duff et al. 2017).
+void make_basis(vec3 n, out vec3 t, out vec3 b) {
+    float s = n.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (s + n.z);
+    float c = n.x * n.y * a;
+    t = vec3(1.0 + s * n.x * n.x * a, s * c, -s * n.x);
+    b = vec3(c, s + n.y * n.y * a, -n.y);
+}
+
+// Visible-normal sampling (Heitz 2018): a microfacet normal seen from wo, in world space.
+vec3 sample_ggx_vndf(vec3 n, vec3 wo, float a) {
+    vec3 t, b;
+    make_basis(n, t, b);
+    vec3 v = vec3(dot(wo, t), dot(wo, b), dot(wo, n));
+    vec3 vh = normalize(vec3(a * v.x, a * v.y, v.z));
+    float lensq = vh.x * vh.x + vh.y * vh.y;
+    vec3 T1 = lensq > 0.0 ? vec3(-vh.y, vh.x, 0.0) * inversesqrt(lensq) : vec3(1.0, 0.0, 0.0);
+    vec3 T2 = cross(vh, T1);
+    float r = sqrt(random());
+    float phi = 2.0 * PI * random();
+    float t1 = r * cos(phi);
+    float t2 = r * sin(phi);
+    float sh = 0.5 * (1.0 + vh.z);
+    t2 = (1.0 - sh) * sqrt(max(0.0, 1.0 - t1 * t1)) + sh * t2;
+    vec3 nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * vh;
+    vec3 hl = normalize(vec3(a * nh.x, a * nh.y, max(1e-6, nh.z)));
+    return t * hl.x + b * hl.y + n * hl.z;
+}
+
+float dielectric_f0(Material m) {
+    float ior = m.eta > 0.0 ? m.eta : 1.5; // glTF default ior
+    float r = (ior - 1.0) / (ior + 1.0);
+    return r * r;
+}
+
+// Probability of sampling the specular lobe (rest: cosine-weighted diffuse).
+float specular_lobe_prob(Material m, float NdotV) {
+    float f0 = dielectric_f0(m);
+    float Fd = f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0);
+    return clamp(mix(Fd, 1.0, m.metallic), 0.05, 0.95);
+}
+
+// Opaque BRDF f(wo, wi) = mix(fresnel_mix(diffuse, specular), conductor specular, metallic),
+// and the pdf of opaque_sample choosing wi.
+vec3 opaque_eval(Material m, vec3 n, vec3 wo, vec3 wi, out float pdf) {
+    pdf = 0.0;
+    float NdotL = dot(n, wi), NdotV = dot(n, wo);
+    if (NdotL <= 0.0 || NdotV <= 0.0)
+        return vec3(0.0);
+    vec3 h = normalize(wo + wi);
+    float NdotH = max(dot(n, h), 0.0), VdotH = max(dot(wo, h), 0.0);
+    float a = ggx_alpha(m.roughness), a2 = a * a;
+    float D = ggx_D(NdotH, a2);
+    float G1V = smith_G1(NdotV, a2);
+    float spec = D * G1V * smith_G1(NdotL, a2) / (4.0 * NdotV * NdotL);
+    float f0 = dielectric_f0(m);
+    float Fd = f0 + (1.0 - f0) * pow(1.0 - VdotH, 5.0);
+    vec3 dielectric = (1.0 - Fd) * m.albedo / PI + vec3(Fd * spec);
+    vec3 metal = (m.albedo + (1.0 - m.albedo) * pow(1.0 - VdotH, 5.0)) * spec;
+    float pSpec = specular_lobe_prob(m, NdotV);
+    pdf = pSpec * D * G1V / (4.0 * NdotV) + (1.0 - pSpec) * NdotL / PI;
+    return mix(dielectric, metal, m.metallic);
+}
+
+// Samples an outgoing direction for the opaque BRDF (lobe mixture).
+bool opaque_sample(Material m, vec3 n, vec3 wo, out vec3 wi) {
+    float NdotV = dot(n, wo);
+    if (NdotV <= 0.0)
+        return false;
+    if (random() < specular_lobe_prob(m, NdotV))
+        wi = reflect(-wo, sample_ggx_vndf(n, wo, ggx_alpha(m.roughness)));
+    else
+        wi = cosine_weighted_hemisphere(n);
+    return dot(n, wi) > 0.0;
+}
+
+bool equiangular_direct(vec3 o, vec3 dir, float t0, float t1, vec3 beta, out vec3 so, out vec3 sd, out float smax, out vec3 value) {
+    float pmf;
+    int li = sample_light_index(o + dir * (0.5 * (t0 + t1)), vec3(0.0), pmf);
+    if (li < 0 || pmf <= 0.0)
+        return false;
+    Light L = lights[li];
+    vec3 sigmaT = fogSigmaS + fogSigmaA;
+    if (L.type == LIGHT_DIRECTIONAL) {
+        // No point to centre on: uniform distance over the overlap.
+        float t = mix(t0, t1, random());
+        so = o + dir * t;
+        smax = 1e30;
+        vec3 Le = L.emit.rgb * emissionScale;
+        if (L.dirB.w > 0.0) { // sized sun: a direction in its cone, radiance / cone pdf
+            sd = sample_sun_dir(L);
+            Le = sun_radiance(L) / sun_cone_pdf(L);
+        } else {
+            sd = -L.dirB.xyz;
+        }
+        value = beta * fogSigmaS * exp(-sigmaT * (t - t0)) * hg_phase(dot(dir, sd), fogG) * Le *
+                fog_transmittance(so, sd, 1e30) * (t1 - t0) / pmf;
+        return true;
+    }
+    // A point y on the light (area pdf pA), its emitted radiance / intensity and normal.
+    vec3 y, ny = vec3(0.0), Le;
+    float pA = pmf;
+    int kind = 0; // 0: delta, 1: one-sided (sphere), 2: two-sided (triangle)
+    if (L.type == LIGHT_POINT || L.type == LIGHT_SPOT) {
+        y = L.posA.xyz;
+        Le = L.emit.rgb * emissionScale;
+    } else if (L.type == LIGHT_SPHERE) {
+        ny = uniform_sphere_dir();
+        y = L.posA.xyz + L.posA.w * ny;
+        Le = get_emission(materials[spheres[L.instance].matIndex]);
+        pA = pmf / (4.0 * PI * L.posA.w * L.posA.w);
+        kind = 1;
+    } else {
+        vec3 p0, p1, p2;
+        world_triangle(L.instance, L.tri, p0, p1, p2);
+        float r1 = sqrt(random()), r2 = random();
+        float b0 = 1.0 - r1, b1 = r1 * (1.0 - r2), b2 = r1 * r2;
+        y = b0 * p0 + b1 * p1 + b2 * p2;
+        vec3 cr = cross(p1 - p0, p2 - p0);
+        ny = normalize(cr);
+        Material m = materials[instance_material(L.instance, L.tri)];
+        if (m.emissionMap >= 0) {
+            Triangle th = triangle[L.tri];
+            m.emission_color *= texture(textureHandles[m.emissionMap], b0 * th.uv0 + b1 * th.uv1 + b2 * th.uv2).rgb;
+        }
+        Le = get_emission(m);
+        pA = pmf / (0.5 * length(cr));
+        kind = 2;
+    }
+    // Equiangular sampling of t around y's projection on the ray.
+    float delta = dot(y - o, dir);
+    float D = max(length(y - (o + dir * delta)), 1e-5);
+    float thA = atan((t0 - delta) / D), thB = atan((t1 - delta) / D);
+    if (thB - thA < 1e-7)
+        return false;
+    float t = delta + D * tan(mix(thA, thB, random()));
+    float pdfT = D / ((thB - thA) * (D * D + (t - delta) * (t - delta)));
+    vec3 x = o + dir * t;
+    vec3 toL = y - x;
+    float d2 = dot(toL, toL);
+    float dist = sqrt(d2);
+    vec3 wl = toL / dist;
+    float G = 1.0 / d2;
+    if (kind == 1) {
+        float c = dot(ny, -wl);
+        if (c <= 0.0)
+            return false;
+        G *= c;
+    } else if (kind == 2) {
+        G *= abs(dot(ny, wl));
+    } else if (L.type == LIGHT_SPOT) {
+        Le *= smoothstep(L.dirB.w, L.posA.w, dot(-wl, L.dirB.xyz));
+    }
+    so = x;
+    sd = wl;
+    smax = dist * (1.0 - 1e-3);
+    value = beta * fogSigmaS * exp(-sigmaT * (t - t0)) * hg_phase(dot(dir, wl), fogG) * Le * G *
+            fog_transmittance(x, wl, dist) / (pA * pdfT);
+    return true;
+}
+
+// Surface data for a triangle hit: re-intersects in the instance's object space,
+// then brings the normal to world space with the inverse transpose of objectToWorld
+// (which keeps it facing against the ray).
+// frontFace: the ray hit the outward (counter-clockwise) side, judged in object space so
+// mirroring instance transforms don't flip it.
+Triangle hit_surface(HitInfo hi, vec3 ray_origin, vec3 ray_dir, out Material mat, out vec3 normal, out vec2 uv, out bool frontFace) {
+    Instance inst = instances[hi.instance];
+    Triangle th = triangle[hi.index];
+    vec3 ro = (inst.worldToObject * vec4(ray_origin, 1.0)).xyz;
+    vec3 rd = mat3(inst.worldToObject) * ray_dir;
+    frontFace = dot(cross(th.v1 - th.v0, th.v2 - th.v0), rd) < 0.0;
+    uv = vec2(0.0);
+    intersectTriangle(ro, rd, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, uv);
+    normal = normalize(transpose(mat3(inst.worldToObject)) * normal);
+    mat = materials[inst.materialOverride >= 0 ? inst.materialOverride : th.matIndex];
+    return th;
 }
 bool debug_box(vec3 ray_origin, vec3 ray_dir, vec3 rayinv) {
     float min_t = 1e20;
     int min_index = -1;
     float tmin, tmax;
-    for (int i = 0; i < bvh_size; ++i) {
-        vec3 normal;
-        bool inter = intersectBox(ray_origin, ray_dir, rayinv, bvh[i].box.min_, bvh[i].box.max_, tmin, tmax);
-        if (inter) {
+    for (int i = 0; i < tlas_size; ++i) {
+        BVHNode n = tlas_node(i);
+        if (intersectBox(ray_origin, ray_dir, rayinv, n.lmin, n.lmax, tmin, tmax) ||
+            intersectBox(ray_origin, ray_dir, rayinv, n.rmin, n.rmax, tmin, tmax)) {
             return true;
         }
     }
     return false;
 }
+// Photon-merging estimate of the caustic radiance leaving x towards wo: photons within
+// photonRadius (same side of the surface), f * flux / (N pi r^2). The radius shrinks over frames
+// (progressive photon mapping), so the estimate is consistent.
+vec3 gather_photons(vec3 x, vec3 n, vec3 wo, Material mat) {
+    float r = photonRadius;
+    vec3 g = x / (2.0 * r);
+    ivec3 c0 = ivec3(floor(g));
+    ivec3 dir = ivec3(step(vec3(0.5), fract(g))) * 2 - 1; // neighbour cells on the near side
+    vec3 sum = vec3(0.0);
+    for (int k = 0; k < 8; ++k) {
+        ivec3 c = c0 + ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1) * dir;
+        uint i = photonBuf[2u + photon_cell(c)];
+        for (int guard = 0; i != PHOTON_NONE && guard < 65536; ++guard) {
+            uint b = 2u + photonGridSize + PHOTON_WORDS * i;
+            vec3 p = uintBitsToFloat(uvec3(photonBuf[b], photonBuf[b + 1u], photonBuf[b + 2u]));
+            vec3 d = p - x;
+            if (dot(d, d) <= r * r) {
+                vec3 pn = uintBitsToFloat(uvec3(photonBuf[b + 9u], photonBuf[b + 10u], photonBuf[b + 11u]));
+                vec3 pw = uintBitsToFloat(uvec3(photonBuf[b + 6u], photonBuf[b + 7u], photonBuf[b + 8u]));
+                if (dot(pn, n) > 0.5 && dot(pw, n) > 0.0) {
+                    float pdfUnused;
+                    vec3 power = uintBitsToFloat(uvec3(photonBuf[b + 3u], photonBuf[b + 4u], photonBuf[b + 5u]));
+                    sum += opaque_eval(mat, n, wo, pw, pdfUnused) * power;
+                }
+            }
+            i = photonBuf[b + 12u];
+        }
+    }
+    return sum / (photonsEmitted * PI * r * r);
+}
+
+// Thread-group ID swizzling (NVIDIA, "Optimizing Compute Shaders for L2 Locality using
+// Thread-Group ID Swizzling"): groups are launched in row-major order, so the groups in flight
+// span whole rows of the screen. Remapping consecutive groups down vertical tiles `tileWidth`
+// groups wide keeps the groups in flight on a compact patch, whose rays share BVH and
+// triangle data in cache.
+ivec2 pixelID() {
+    uvec2 grid = gl_NumWorkGroups.xy, gid = gl_WorkGroupID.xy;
+    uint n = uint(tileWidth);
+    if (n > 0u && n < grid.x) {
+        uint linear = gid.y * grid.x + gid.x;
+        uint perTile = n * grid.y;
+        uint tile = linear / perTile, inTile = linear % perTile;
+        uint w = tile < grid.x / n ? n : grid.x % n; // the last tile may be narrower
+        gid = uvec2(tile * n + inTile % w, inTile / w);
+    }
+    return ivec2(gid * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+}
+
+#ifdef LIGHT_TRACE
+// ---------------------------------------------------------------------------------------
+// Light tracing for caustics. A path leaves a light chosen by power; once it has passed
+// through glass, every surface or fog vertex it reaches is connected to the pinhole camera
+// and splatted into causticAccum. Paths whose first interaction is not glass belong to the
+// camera tracer (which in turn skips light reached through glass after a scattering vertex).
+// ---------------------------------------------------------------------------------------
+void camera_frame(out vec3 fwd, out vec3 right, out vec3 up) {
+    mat3 r = rotateY(angle_offset.x) * rotateX(angle_offset.y);
+    fwd = r * vec3(0, 0, 1);
+    right = r * vec3(1, 0, 0);
+    up = r * vec3(0, 1, 0);
+}
+
+// Splats light scattered at x towards the camera. `scattered` is beta * f * |cos| at x (or
+// beta * phase in fog); the pinhole importance and camera geometry are applied here. One light
+// path is traced per pixel, so a pixel's per-frame estimate is simply the sum of its splats.
+void connect_to_camera(vec3 x, vec3 so, vec3 scattered) {
+    vec3 fwd, right, up;
+    camera_frame(fwd, right, up);
+    vec3 d = x - camera_pos;
+    float z = dot(d, fwd);
+    if (z <= 1e-6)
+        return;
+    float scale = tan(radians(fov) * 0.5);
+    float aspect = iResolution.x / iResolution.y;
+    float u = dot(d, right) / (z * scale);
+    float v = dot(d, up) / (z * scale);
+    ivec2 px = ivec2(floor(vec2((u / aspect * 0.5 + 0.5) * iResolution.x, (v * 0.5 + 0.5) * iResolution.y) + 0.5));
+    if (px.x < 0 || px.y < 0 || px.x >= int(iResolution.x) || px.y >= int(iResolution.y))
+        return;
+    // Points near the camera would get huge 1/d^2 splats (fireflies); the camera tracer covers
+    // caustic paths whose first scattering point is that close instead.
+    if (dot(d, d) < ltMinDist * ltMinDist)
+        return;
+    vec3 sd = camera_pos - so;
+    float sl = length(sd);
+    sd /= sl;
+    int tests = 0;
+    if (find_closest(so, sd, 1.0 / sd, sl * (1.0 - 1e-4), true, tests).index != -1)
+        return;
+    float dist2 = dot(d, d);
+    float cosCam = z / sqrt(dist2);
+    float filmArea = 4.0 * aspect * scale * scale; // film at distance 1
+    vec3 value = scattered * fog_transmittance(x, -d / sqrt(dist2), sqrt(dist2)) /
+                 (dist2 * cosCam * cosCam * cosCam * filmArea);
+    int ci = 3 * (px.y * int(iResolution.x) + px.x);
+    for (int c = 0; c < 3; ++c) {
+        float q = value[c] * CAUSTIC_SCALE;
+        if (q > 0.0)
+            atomicAdd(causticAccum[ci + c], uint(min(floor(q + random()), 4.0e9))); // stochastic rounding
+    }
+}
+
+void light_trace_main() {
+    ivec2 pix = pixelID();
+    if (pix.x >= int(iResolution.x) || pix.y >= int(iResolution.y))
+        return;
+    initRandomGenerator(vec2(pix));
+    seed ^= 0x68bc21ebu; // independent of the camera pass's stream
+    if (emit_light_count == 0 || emitCdf[emit_light_count - 1] <= 0.0)
+        return;
+
+    // Emit: light by power, then a point and direction on it. beta = Le * cos / pdf.
+    float u = random();
+    int lo = 0, hi = emit_light_count - 1;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (emitCdf[mid] < u) lo = mid + 1; else hi = mid;
+    }
+    float pmf = emitCdf[lo] - (lo > 0 ? emitCdf[lo - 1] : 0.0);
+    if (pmf <= 0.0)
+        return;
+    Light L = lights[lo];
+    vec3 o, d, beta;
+    if (L.type == LIGHT_TRIANGLE) {
+        vec3 p0, p1, p2;
+        world_triangle(L.instance, L.tri, p0, p1, p2);
+        float r1 = sqrt(random()), r2 = random();
+        float b0 = 1.0 - r1, b1 = r1 * (1.0 - r2), b2 = r1 * r2;
+        vec3 cr = cross(p1 - p0, p2 - p0);
+        vec3 n = normalize(cr);
+        if (random() < 0.5)
+            n = -n; // two-sided
+        Material m = materials[instance_material(L.instance, L.tri)];
+        if (m.emissionMap >= 0) {
+            Triangle th = triangle[L.tri];
+            m.emission_color *= texture(textureHandles[m.emissionMap], b0 * th.uv0 + b1 * th.uv1 + b2 * th.uv2).rgb;
+        }
+        d = cosine_weighted_hemisphere(n);
+        o = b0 * p0 + b1 * p1 + b2 * p2 + n * 1e-3;
+        beta = get_emission(m) * (2.0 * PI * 0.5 * length(cr) / pmf); // area / (0.5 * 1/pi)
+    } else if (L.type == LIGHT_SPHERE) {
+        vec3 n = uniform_sphere_dir();
+        d = cosine_weighted_hemisphere(n);
+        o = L.posA.xyz + (L.posA.w + 1e-3) * n;
+        beta = get_emission(materials[spheres[L.instance].matIndex]) * (4.0 * PI * PI * L.posA.w * L.posA.w / pmf);
+    } else if (L.type == LIGHT_POINT) {
+        o = L.posA.xyz;
+        d = uniform_sphere_dir();
+        beta = L.emit.rgb * emissionScale * (4.0 * PI / pmf);
+    } else if (L.type == LIGHT_SPOT) {
+        float cosT = 1.0 - random() * (1.0 - L.dirB.w);
+        float sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+        float phi = 2.0 * PI * random();
+        vec3 t, b;
+        make_basis(L.dirB.xyz, t, b);
+        d = normalize(t * (sinT * cos(phi)) + b * (sinT * sin(phi)) + L.dirB.xyz * cosT);
+        o = L.posA.xyz;
+        beta = L.emit.rgb * emissionScale * smoothstep(L.dirB.w, L.posA.w, cosT) * (2.0 * PI * (1.0 - L.dirB.w) / pmf);
+    } else {
+        return;
+    }
+    float beta0 = max(beta.r, max(beta.g, beta.b));
+    if (beta0 <= 0.0)
+        return;
+
+    bool throughGlass = false;
+    bool photonStored = false; // a photon is stored at the first diffuse vertex after glass
+    bool insideGlass = false;
+    vec3 mediumSigma = vec3(0.0);
+    float lambda = 0.0; // sampled wavelength once dispersive glass is met
+    for (int seg = 0; seg < 24; ++seg) {
+        int tests = 0;
+        HitInfo hi = find_closest(o, d, 1.0 / d, 1e30, false, tests);
+        if (fogEnabled != 0 && !insideGlass) {
+            float t0, t1;
+            if (fog_overlap(o, d, hi.index == -1 ? 1e30 : hi.t, t0, t1)) {
+                vec3 sigmaT = fogSigmaS + fogSigmaA;
+                float st = sigmaT[min(int(random() * 3.0), 2)];
+                float dd = st > 0.0 ? t0 - log(1.0 - random()) / st : 1e30;
+                if (dd < t1) {
+                    vec3 Tr = exp(-sigmaT * (dd - t0));
+                    beta *= fogSigmaS * Tr / dot(sigmaT * Tr, vec3(1.0 / 3.0));
+                    vec3 p = o + d * dd;
+                    if (!throughGlass && ltDebugDirect == 0)
+                        return; // light -> fog: the camera tracer's job
+                    connect_to_camera(p, p, beta * hg_phase(dot(d, normalize(camera_pos - p)), fogG));
+                    d = sample_hg(d, fogG);
+                    o = p;
+                    float q = clamp(max(beta.r, max(beta.g, beta.b)) / beta0, 0.05, 1.0);
+                    if (random() >= q)
+                        return;
+                    beta /= q;
+                    continue;
+                }
+                vec3 Tr = exp(-sigmaT * (t1 - t0));
+                beta *= Tr / dot(Tr, vec3(1.0 / 3.0));
+            }
+        }
+        if (max(mediumSigma.r, max(mediumSigma.g, mediumSigma.b)) > 0.0)
+            beta *= exp(-mediumSigma * (hi.index == -1 ? 1e30 : hi.t));
+        if (hi.index == -1)
+            return;
+
+        vec3 x = o + d * hi.t;
+        Material mat;
+        vec3 n;
+        bool frontFace = true;
+        if (hi.is_sphere) {
+            Sphere sh = spheres[hi.index];
+            mat = materials[sh.matIndex];
+            n = normalize(x - sh.center);
+            frontFace = dot(n, d) < 0.0;
+            if (!frontFace)
+                n = -n;
+        } else {
+            vec2 uv;
+            Triangle th = hit_surface(hi, o, d, mat, n, uv, frontFace);
+            if (th.hasTexture)
+                mat.albedo = texture(textureHandles[th.colourMapIndex], uv).rgb;
+        }
+        vec3 em = get_emission(mat);
+        if (max(em.r, max(em.g, em.b)) > 0.0)
+            return; // emitters end paths, as in the camera tracer
+        vec3 wo = -d; // towards where the light came from; n faces it
+
+        if (mat.transmission > 0.0 && random() < mat.transmission) {
+            bool thin = mat.thinWalled != 0;
+            if (mat.dispersion > 0.0 && lambda == 0.0) {
+                vec3 w;
+                lambda = sample_wavelength(w);
+                beta *= w;
+            }
+            float ior = dispersive_ior(mat.eta, mat.dispersion, lambda);
+            float etaRatio = (thin || frontFace) ? 1.0 / ior : ior;
+            bool rough = mat.roughness > 0.02 && !thin;
+            float a2 = ggx_alpha(mat.roughness) * ggx_alpha(mat.roughness);
+            vec3 m = rough ? sample_ggx_vndf(n, wo, ggx_alpha(mat.roughness)) : n;
+            float cosI = clamp(dot(wo, m), 0.0, 1.0);
+            vec3 wi;
+            if (random() < fresnel_dielectric(cosI, etaRatio)) {
+                wi = reflect(-wo, m);
+                if (dot(wi, n) <= 0.0)
+                    return;
+                o = x + n * 1e-3;
+            } else {
+                wi = thin ? -wo : refract(-wo, m, etaRatio);
+                if (dot(wi, n) >= 0.0)
+                    return;
+                o = x - n * 1e-3;
+                beta *= mat.albedo;
+                if (!thin) {
+                    mediumSigma = frontFace ? mat.sigma_a : vec3(0.0);
+                    insideGlass = frontFace;
+                }
+            }
+            if (rough)
+                beta *= smith_G1(abs(dot(wi, n)), a2);
+            d = wi;
+            throughGlass = true;
+            continue;
+        }
+
+        if (!throughGlass && ltDebugDirect == 0)
+            return; // light -> surface: the camera tracer's job
+        // First diffuse vertex after glass: store a photon (incident flux beta from direction wo)
+        // for camera paths that reach this surface through glass (photon merging).
+        if (usePhotonMerging != 0 && !photonStored) {
+            photonStored = true;
+            uint idx = atomicAdd(photonBuf[0], 1u);
+            if (idx < photonCapacity) {
+                uint b = 2u + photonGridSize + PHOTON_WORDS * idx;
+                photonBuf[b] = floatBitsToUint(x.x); photonBuf[b + 1u] = floatBitsToUint(x.y); photonBuf[b + 2u] = floatBitsToUint(x.z);
+                photonBuf[b + 3u] = floatBitsToUint(beta.r); photonBuf[b + 4u] = floatBitsToUint(beta.g); photonBuf[b + 5u] = floatBitsToUint(beta.b);
+                photonBuf[b + 6u] = floatBitsToUint(wo.x); photonBuf[b + 7u] = floatBitsToUint(wo.y); photonBuf[b + 8u] = floatBitsToUint(wo.z);
+                photonBuf[b + 9u] = floatBitsToUint(n.x); photonBuf[b + 10u] = floatBitsToUint(n.y); photonBuf[b + 11u] = floatBitsToUint(n.z);
+                uint h = photon_cell(ivec3(floor(x / (2.0 * photonRadius))));
+                photonBuf[b + 12u] = atomicExchange(photonBuf[2u + h], idx);
+            }
+        }
+        // Connect to the camera (reciprocal BRDF: camera and light side must both face n).
+        vec3 wc = normalize(camera_pos - x);
+        float pdfUnused;
+        vec3 f = opaque_eval(mat, n, wc, wo, pdfUnused);
+        if (max(f.r, max(f.g, f.b)) > 0.0)
+            connect_to_camera(x, x + n * 1e-3, beta * f * abs(dot(n, wc)));
+        if (ltDebugDirect != 0)
+            return;
+        // Continue the light path.
+        vec3 wi;
+        if (!opaque_sample(mat, n, wo, wi))
+            return;
+        float pdf;
+        vec3 ff = opaque_eval(mat, n, wo, wi, pdf);
+        if (pdf <= 0.0)
+            return;
+        beta *= ff * dot(n, wi) / pdf;
+        o = x + n * 1e-3;
+        d = wi;
+        float q = clamp(max(beta.r, max(beta.g, beta.b)) / beta0, 0.05, 1.0);
+        if (random() >= q)
+            return;
+        beta /= q;
+    }
+}
+
+void main() {
+    light_trace_main();
+}
+#else
 //#define DEBUG_ALL_TRIANGLES 0
 void main() {
 #ifdef DEBUG_ALL_TRIANGLES
-    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 pix = pixelID();
     if (pix.x >= int(iResolution.x) || pix.y >= int(iResolution.y)) return;
     vec2 fragCoord = vec2(pix);
     vec4 coords = vec4(fragCoord, 0.0, 1.0);
@@ -454,7 +1575,8 @@ void main() {
     float min_t = 1e30;
     int min_index = -1;
     for (int i = 0; i < triangle.length(); ++i) {
-        float t = intersectTriangleSimple(ray_origin, ray_dir, triangle[i].v0, triangle[i].v1, triangle[i].v2);
+        vec2 bary;
+        float t = intersectTriangleSimple(ray_origin, ray_dir, triangle[i].v0, triangle[i].v1, triangle[i].v2, bary);
         if (t > 0.0 && t < min_t) {
             min_t = t;
             min_index = i;
@@ -472,8 +1594,16 @@ void main() {
     imageStore(outputImage, pix, vec4(outCol, 1.0));
     return;
 #else
-    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 pix = pixelID();
     if (pix.x >= int(iResolution.x) || pix.y >= int(iResolution.y)) return;
+    if (adaptive != 0 && imageLoad(adaptiveAux, pix).a < 0.0) {
+        // Converged: take no more samples; drop this frame's splats with the sample.
+        int ci = 3 * (pix.y * int(iResolution.x) + pix.x);
+        causticAccum[ci] = 0u;
+        causticAccum[ci + 1] = 0u;
+        causticAccum[ci + 2] = 0u;
+        return;
+    }
     vec2 fragCoord = vec2(pix);
     vec4 coords = vec4(fragCoord, 0.0, 1.0);
     initRandomGenerator(coords.xy);
@@ -485,7 +1615,6 @@ void main() {
     uv.x *= aspect_ratio;
     int samples = accumulateSamples;
     int bounces = accumulateBounces;
-    int max_bounces = accumulateBounces;
     vec3 sky_color = vec3(0.9, 0.8, 0.8);
     vec3 fcolor = vec3(0.0);
     float fov_rad = radians(fov);
@@ -496,6 +1625,8 @@ void main() {
         bounces = movingBounces;
     }
     vec3 flight = vec3(0.0);
+    if (ltDebugDirect != 0)
+        samples = 0; // debug: only the light-traced splats
     for (int s = 0; s < samples; ++s) {
         vec3 ray_origin = camera_pos;
         mat3 rotY = rotateY(angle_offset.x);
@@ -511,152 +1642,371 @@ void main() {
         vec3 rayinv = 1.0 / ray_dir;
         vec3 light = vec3(0.0);
         vec3 contribution = vec3(1.0);
-        vec3 bbCol = vec3(0.0f);
-        if (bounces == 1) {
+        // Previous vertex, for MIS-weighting emitters hit by BSDF sampling.
+        bool prevDiffuse = false;
+        vec3 prevPoint = vec3(0.0);
+        vec3 prevNormal = vec3(0.0, 1.0, 0.0);
+        float prevBsdfPdf = 0.0;
+        // i counts scattering (non-specular) bounces; dielectric events get up to 16 extra
+        // segments so light can enter, cross and leave glass.
+        int i = 0;
+        vec3 mediumSigma = vec3(0.0); // absorption of the volume the ray is travelling through
+        bool insideGlass = false;
+        bool hadScatter = false;      // a non-specular vertex (surface or fog) occurred
+        bool specChain = false;       // only glass events since the last such vertex
+        bool firstScatterDirect = false;
+        bool firstScatterMerged = false; // caustics at the first scatter came from photon merging
+        int scatterCount = 0;
+        bool specSeen = false; // any glass event so far
+        float lambda = 0.0;    // sampled wavelength (nm), 0 until the path meets dispersive glass // the first scattering vertex is seen without glass (light tracing can connect to it)
+        bool prevEquiangular = false; // the previous segment's direct light came from equiangular sampling
+        bool done = false;
+        // Shadow rays queued during an iteration are traced at the top of the next one, so the
+        // shadow traversal is inlined once.
+        vec3 shO[2], shD[2], shVal[2];
+        float shMax[2];
+        int shCount = 0;
+        int seg = 0;
+        for (;;) {
+            for (int k = 0; k < shCount; ++k) {
+                int shadowTests = 0;
+                if (find_closest(shO[k], shD[k], 1.0 / shD[k], shMax[k], true, shadowTests).index == -1)
+                    light += shVal[k];
+            }
+            shCount = 0;
+            if (done || seg >= bounces + 16 || i >= bounces)
+                break;
+            ++seg;
             int intersects = 0;
-            HitInfo hi = find_closest(ray_origin, ray_dir, rayinv, intersects);
+            HitInfo hi = find_closest(ray_origin, ray_dir, rayinv, 1e30, false, intersects);
+            // Fog: sample a free-flight distance within the segment's overlap with the fog box.
+            // One colour channel drives the sampling; weights use the channel-averaged pdf, so
+            // coloured media stay unbiased. Not inside glass (the medium is outside objects).
+            if (fogEnabled != 0 && !insideGlass) {
+                float segLen = length(ray_dir);
+                vec3 dir = ray_dir / segLen;
+                float t0, t1;
+                if (fog_overlap(ray_origin, dir, hi.index == -1 ? 1e30 : hi.t * segLen, t0, t1)) {
+                    vec3 sigmaT = fogSigmaS + fogSigmaA;
+                    // Direct in-scattering along this segment via equiangular sampling; the free-
+                    // flight vertex below then skips direct light so nothing is counted twice.
+                    bool segEquiangular = useEquiangular != 0 && useNEE != 0 && light_count > 0 && i < neeDepth;
+                    if (segEquiangular && equiangular_direct(ray_origin, dir, t0, t1, contribution, shO[shCount], shD[shCount], shMax[shCount], shVal[shCount]))
+                        ++shCount;
+                    float st = sigmaT[min(int(random() * 3.0), 2)];
+                    float d = st > 0.0 ? t0 - log(1.0 - random()) / st : 1e30;
+                    if (d < t1) {
+                        // Scattering event: weight sigma_s * Tr / pdf.
+                        vec3 Tr = exp(-sigmaT * (d - t0));
+                        contribution *= fogSigmaS * Tr / dot(sigmaT * Tr, vec3(1.0 / 3.0));
+                        vec3 p = ray_origin + dir * d;
+                        // Below neeDepth only delta lights are light-sampled: BSDF rays can't hit them,
+                        // while area lights are left to (full-weight) phase sampling.
+                        bool neeVertex = useNEE != 0 && light_count > 0 && i < neeDepth && !segEquiangular;
+                        bool deltaOnly = !neeVertex && !segEquiangular && useNEE != 0 && delta_light_count > 0;
+                        if (neeVertex || deltaOnly) {
+                            vec3 wl, Li;
+                            float dist, pdfLight;
+                            bool isDelta = true;
+                            bool sampled = neeVertex ? sample_light(p, vec3(0.0), wl, dist, Li, pdfLight, isDelta)
+                                                     : sample_delta_light(p, wl, dist, Li, pdfLight);
+                            if (sampled && pdfLight > 0.0) {
+                                float ph = hg_phase(dot(dir, wl), fogG);
+                                float w = (isDelta || i == bounces - 1) ? 1.0 : pdfLight * pdfLight / (pdfLight * pdfLight + ph * ph);
+                                shO[shCount] = p;
+                                shD[shCount] = wl;
+                                shMax[shCount] = dist * (1.0 - 1e-3);
+                                shVal[shCount] = contribution * ph * Li * fog_transmittance(p, wl, dist) / pdfLight * w;
+                                ++shCount;
+                            }
+                        }
+                        if (!hadScatter)
+                            firstScatterDirect = !specSeen && distance(p, camera_pos) >= ltMinDist;
+                        hadScatter = true;
+                        ++scatterCount;
+                        specChain = false;
+                        prevEquiangular = segEquiangular;
+                        vec3 wi = sample_hg(dir, fogG); // pdf == phase, so the throughput is unchanged
+                        prevDiffuse = neeVertex;
+                        prevPoint = p;
+                        prevNormal = vec3(0.0);
+                        prevBsdfPdf = hg_phase(dot(dir, wi), fogG);
+                        ray_origin = p;
+                        ray_dir = wi;
+                        rayinv = 1.0 / wi;
+                        if (rrStart >= 0 && i >= rrStart && i < bounces - 1) {
+                            float q = clamp(max(contribution.r, max(contribution.g, contribution.b)), 0.05, 1.0);
+                            if (random() >= q)
+                                { done = true; continue; }
+                            contribution /= q;
+                        }
+                        ++i;
+                        continue;
+                    }
+                    // Passed through: weight Tr / P(no event).
+                    vec3 Tr = exp(-sigmaT * (t1 - t0));
+                    contribution *= Tr / dot(Tr, vec3(1.0 / 3.0));
+                }
+            }
+            // Beer-Lambert absorption along the segment inside a volume.
+            if (max(mediumSigma.r, max(mediumSigma.g, mediumSigma.b)) > 0.0)
+                contribution *= exp(-mediumSigma * (hi.index == -1 ? 1e30 : hi.t * length(ray_dir)));
+            if (debugView == 1) {
+                // Box + triangle tests for the primary ray: blue (cheap) -> green -> red (>= 512).
+                float h = clamp(float(intersects) / 512.0, 0.0, 1.0);
+                light = h < 0.5 ? mix(vec3(0, 0, 1), vec3(0, 1, 0), h * 2.0) : mix(vec3(0, 1, 0), vec3(1, 0, 0), h * 2.0 - 1.0);
+                { done = true; continue; }
+            }
+            float t1 = hi.t;
             if (hi.index == -1) {
                 vec2 skybox_uv = RayDirectionToUV(ray_dir);
                 vec3 sky_box = texture(hdri, skybox_uv).rgb;
-                sky_box = clamp(sky_box, 0.0f, 1.0f);
-                light = sky_box;
-            } else {
-                Material mat;
-                vec3 hit_point = vec3(0.0f);
-                vec3 normal;
-                if (hi.is_sphere) {
-                    Sphere sh = spheres[hi.index];
-                    mat = materials[sh.matIndex];
-                    hit_point = ray_origin + ray_dir * hi.t;
-                    normal = normalize(hit_point - sh.center);
-                } else {
-                    Triangle th = triangle[hi.index];
-                    mat = materials[th.matIndex];
-                    hit_point = ray_origin + ray_dir * hi.t;
-                    vec2 interpolatedUv = vec2(0.0);
-                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, interpolatedUv);
+                sky_box = clamp(sky_box, 0.0f, 10.0f);
+                sky_box = (vec3(0,0,0) + sky_box);
+                light += sky_box * contribution;
+                // Sized suns are hit by escaping rays (MIS against light sampling). Light tracing
+                // never emits directional lights, so these paths are always the camera's.
+                for (int k = 0; k < infinite_light_count; ++k) {
+                    Light L = lights[k];
+                    if (L.dirB.w <= 0.0 || dot(ray_dir, -L.dirB.xyz) < L.dirB.w)
+                        continue;
+                    float w = prevEquiangular ? 0.0 : 1.0;
+                    if (prevDiffuse && !prevEquiangular) {
+                        float pdfLight = light_pmf(prevPoint, prevNormal, k) * sun_cone_pdf(L);
+                        w = prevBsdfPdf * prevBsdfPdf / (prevBsdfPdf * prevBsdfPdf + pdfLight * pdfLight);
+                    }
+                    light += sun_radiance(L) * contribution * w;
                 }
-                light = mat.albedo;
+                { done = true; continue; }
             }
-            fcolor += mix(light, vec3(1.0), 0.0);
-        } else {
-            for (int i = 0; i < bounces; ++i) {
-                int intersects = 0;
-                HitInfo hi = find_closest(ray_origin, ray_dir, rayinv, intersects);
-                float t1 = hi.t;
-                if (hi.index == -1) {
-                    vec2 skybox_uv = RayDirectionToUV(ray_dir);
-                    vec3 sky_box = texture(hdri, skybox_uv).rgb;
-                    sky_box = clamp(sky_box, 0.0f, 10.0f);
-                    sky_box = (vec3(0,0,0) + sky_box);
-                    light += sky_box * contribution;
-                    break;
-                }
-                vec3 hit_point = vec3(0.0f);
-                Material mat;
-                vec3 normal;
-                bool front_face = true;
-                if (hi.is_sphere) {
-                    Sphere sh = spheres[hi.index];
-                    mat = materials[sh.matIndex];
-                    hit_point = ray_origin + ray_dir * t1;
-                    normal = normalize(hit_point - sh.center);
-                } else {
-                    Triangle th = triangle[hi.index];
-                    mat = materials[th.matIndex];
-                    hit_point = ray_origin + ray_dir * t1;
-                    vec2 interpolatedUv = vec2(0.0);
-                    intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, interpolatedUv);
-                    if (th.hasTexture) {
-                        vec3 texColor = texture(sampler2D(textureHandles[th.colourMapIndex]), interpolatedUv).rgb;
-                        mat.albedo = texColor;
-                    }
-                }
-                vec3 offset = normal * 0.01;
-                ray_origin = hit_point + offset;
-                vec3 copy = ray_dir;
-                vec3 de;
-                {
-                    float eta = 1.8 * (1 - mat.metallic);
-                    float eta_fraction = 1.0 / eta;
-                    float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
-                    f0 = f0 * f0;
-                    float r0 = f0;
-                    vec3 nwo = ray_dir;
-                    float cos_theta = -dot(normal, nwo);
-                    float reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
-                    float rand_val = random();
-                    vec3 diffuse = cosine_weighted_hemisphere(normal);
-                    vec3 dielctic = diffuse;
-                    de = diffuse;
-                    if (rand_val * 1.2 < reflectance) {
-                        vec3 rdir = reflect(nwo, normal);
-                        dielctic = mix(rdir, diffuse, mat.roughness);
-                        de = dielctic;
-                    }
-                }
-                vec3 metal_dir = normalize(mix(reflect(ray_dir, normal), cosine_weighted_hemisphere(normal), mat.roughness));
-                ray_dir = mix(de, metal_dir, mat.metallic);
-                rayinv = 1.0 / ray_dir;
-                contribution *= mix(contribution, mat.albedo, 1);
-                
-                light += get_emission(mat) * contribution;
-                // Stop ray if material is emissive
-                if (mat.emission_power > 0.0 || length(mat.emission_color) > 0.0) {
-                    break;
-                }
-                if (dot(-normal, ray_dir) > 0.0) {
-                    front_face = false;
+            vec3 hit_point = vec3(0.0f);
+            Material mat;
+            vec3 normal;
+            bool frontFace = true;
+            if (hi.is_sphere) {
+                Sphere sh = spheres[hi.index];
+                mat = materials[sh.matIndex];
+                hit_point = ray_origin + ray_dir * t1;
+                normal = normalize(hit_point - sh.center);
+                frontFace = dot(normal, ray_dir) < 0.0;
+                if (!frontFace)
                     normal = -normal;
-                } else {
-                    front_face = true;
+            } else {
+                vec2 interpolatedUv;
+                Triangle th = hit_surface(hi, ray_origin, ray_dir, mat, normal, interpolatedUv, frontFace);
+                hit_point = ray_origin + ray_dir * t1;
+                if (th.hasTexture) {
+                    vec3 texColor = texture(textureHandles[th.colourMapIndex], interpolatedUv).rgb;
+                    mat.albedo = texColor;
                 }
-                if (abs(mat.eta) > 0.01) {
-                    if (max_bounces == bounces) {
-                        max_bounces += 8;
-                    }
-                    ray_dir = copy;
-                    rayinv = 1.0 / ray_dir;
-                    float eta = mat.eta;
-                    float eta_fraction = 1.0 / eta;
-                    float f0 = (1.0 - eta_fraction) / (1.0 + eta_fraction);
-                    f0 = f0 * f0;
-                    if (!front_face)
-                        eta_fraction = eta;
-                    vec3 nwo = ray_dir;
-                    float cos_theta = -dot(normal, nwo);
-                    float sin_theta_2 = 1.0 - (eta_fraction * eta_fraction) * (1.0 - cos_theta * cos_theta);
-                    bool cannot_refract = sin_theta_2 <= 0.0;
-                    float r0 = f0;
-                    float reflectance = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
-                    float rand_val = random();
-                    vec3 dir;
-                    vec3 origin;
-                    if (!cannot_refract && rand_val * 1.2 > reflectance) {
-                        origin = hit_point - normal * 0.001;
-                        dir = refract(ray_dir, normal, eta_fraction);
-                    } else {
-                        origin = hit_point + normal * 0.01;
-                        dir = reflect(nwo, normal);
-                    }
-                    ray_dir = normalize(dir);
-                    rayinv = 1.0 / ray_dir;
-                    ray_origin = origin;
+                if (mat.emissionMap >= 0) {
+                    mat.emission_color *= texture(textureHandles[mat.emissionMap], interpolatedUv).rgb;
                 }
             }
-            fcolor += mix(light / float(samples), vec3(1.0), 0.0);
+            // Smooth dielectric (glTF transmission), chosen with probability `transmission`.
+            // Reflect with the exact Fresnel probability (untinted), otherwise refract, tinted by
+            // the base color; refraction into a volume starts Beer-Lambert absorption.
+            // Rough glass scatters about a GGX microfacet normal (VNDF-sampled); the estimator
+            // weight is then G1 of the outgoing direction (Fresnel cancels its selection).
+            if (mat.transmission > 0.0 && random() < mat.transmission) {
+                vec3 wo = -normalize(ray_dir); // towards the previous vertex; normal faces it
+                bool thin = mat.thinWalled != 0;
+                if (mat.dispersion > 0.0 && lambda == 0.0) {
+                    vec3 w;
+                    lambda = sample_wavelength(w);
+                    contribution *= w;
+                }
+                float ior = dispersive_ior(mat.eta, mat.dispersion, lambda);
+                float etaRatio = (thin || frontFace) ? 1.0 / ior : ior;
+                bool rough = mat.roughness > 0.02 && !thin;
+                float a2 = ggx_alpha(mat.roughness) * ggx_alpha(mat.roughness);
+                vec3 m = rough ? sample_ggx_vndf(normal, wo, ggx_alpha(mat.roughness)) : normal;
+                float cosI = clamp(dot(wo, m), 0.0, 1.0);
+                vec3 wi;
+                bool transmitted = random() >= fresnel_dielectric(cosI, etaRatio);
+                if (!transmitted) {
+                    wi = reflect(-wo, m);
+                    if (dot(wi, normal) <= 0.0)
+                        { done = true; continue; } // reflected below the surface: absorbed by masking
+                    ray_origin = hit_point + normal * 0.001;
+                } else {
+                    wi = thin ? -wo : refract(-wo, m, etaRatio);
+                    if (dot(wi, normal) >= 0.0)
+                        { done = true; continue; }
+                    ray_origin = hit_point - normal * 0.001;
+                    // Radiance is compressed by (eta_i / eta_t)^2 across a refraction (it cancels
+                    // over a closed object); light tracing transports importance and has no factor.
+                    contribution *= mat.albedo * (thin ? 1.0 : etaRatio * etaRatio);
+                    if (!thin) {
+                        mediumSigma = frontFace ? mat.sigma_a : vec3(0.0);
+                        insideGlass = frontFace;
+                    }
+                }
+                if (rough)
+                    contribution *= smith_G1(abs(dot(wi, normal)), a2);
+                ray_dir = wi;
+                rayinv = 1.0 / ray_dir;
+                prevDiffuse = false;
+                prevEquiangular = false;
+                specChain = true;
+                specSeen = true;
+                continue; // specular events don't use the bounce budget
+            }
+            vec3 wo = -normalize(ray_dir); // towards the previous vertex; normal faces it
+            ray_origin = hit_point + normal * 0.01;
+            // Emitted light reaches the eye with the throughput accumulated so far.
+            vec3 emission = get_emission(mat);
+            // Stop ray at emitters (unlit texels of an emissive map still reflect)
+            if (max(emission.r, max(emission.g, emission.b)) > 0.0) {
+                // Light reached through glass right after a scattering vertex is a caustic path:
+                // light tracing estimates it instead.
+                if (useCausticTracing != 0 && hadScatter && specChain && firstScatterDirect) { done = true; continue; } // (firstScatterDirect includes the ltMinDist test)
+                // ... and light reached through glass right after a merged first vertex was
+                // estimated from the photons there.
+                if (useCausticTracing != 0 && specChain && firstScatterMerged && scatterCount == 1) { done = true; continue; }
+                float w = prevEquiangular ? 0.0 : 1.0; // already estimated by equiangular sampling
+                if (prevDiffuse && !prevEquiangular) {
+                    // Light sampling could also have produced this path: power-heuristic weight.
+                    float pdfLight = 0.0;
+                    if (!hi.is_sphere) {
+                        Instance inst = instances[hi.instance];
+                        int li = inst.lightIndexBase >= 0 ? lightIndexOf[inst.lightIndexBase + hi.index - inst.triStart] : -1;
+                        if (li >= 0) {
+                            vec3 p0, p1, p2;
+                            world_triangle(hi.instance, hi.index, p0, p1, p2);
+                            vec3 cr = cross(p1 - p0, p2 - p0);
+                            float area = 0.5 * length(cr);
+                            vec3 d = hit_point - prevPoint;
+                            float dist2 = dot(d, d);
+                            float cosL = abs(dot(cr / (2.0 * area), d * inversesqrt(dist2)));
+                            pdfLight = light_pmf(prevPoint, prevNormal, li) / area * dist2 / max(cosL, 1e-8);
+                        }
+                    } else if (spheres[hi.index].lightIndex >= 0) {
+                        Sphere sh = spheres[hi.index];
+                        pdfLight = light_pmf(prevPoint, prevNormal, sh.lightIndex) * sphere_cone_pdf(prevPoint, sh.center, sh.r);
+                    }
+                    w = prevBsdfPdf * prevBsdfPdf / (prevBsdfPdf * prevBsdfPdf + pdfLight * pdfLight);
+                }
+                light += emission * contribution * w;
+                { done = true; continue; }
+            }
+
+            if (!hadScatter) {
+                firstScatterDirect = !specSeen && distance(hit_point, camera_pos) >= ltMinDist;
+                // Light tracing cannot connect to this vertex (seen through glass, or too close):
+                // estimate its caustic light (light -> glass -> here) from the stored photons.
+                if (useCausticTracing != 0 && usePhotonMerging != 0 && !firstScatterDirect) {
+                    light += contribution * gather_photons(hit_point, normal, wo, mat);
+                    firstScatterMerged = true;
+                }
+            }
+            hadScatter = true;
+            ++scatterCount;
+            specChain = false;
+            prevEquiangular = false;
+            // Light sampling (NEE) with the full BRDF; deeper vertices skip it (BSDF sampling
+            // only), and MIS below only applies to vertices that actually sampled a light.
+            // Below neeDepth only delta lights are light-sampled: BSDF rays can't hit them, while
+            // area lights are left to (full-weight) BSDF sampling.
+            bool neeVertex = useNEE != 0 && light_count > 0 && i < neeDepth;
+            bool deltaOnly = !neeVertex && useNEE != 0 && delta_light_count > 0;
+            if (neeVertex || deltaOnly) {
+                vec3 wi, Li;
+                float dist, pdfLight;
+                bool isDelta = true;
+                // Sample from the true surface point; only the shadow ray starts at the offset origin.
+                bool sampled = neeVertex ? sample_light(hit_point, normal, wi, dist, Li, pdfLight, isDelta)
+                                         : sample_delta_light(hit_point, wi, dist, Li, pdfLight);
+                if (sampled) {
+                    float pdfBsdf;
+                    vec3 f = opaque_eval(mat, normal, wo, wi, pdfBsdf);
+                    if (max(f.r, max(f.g, f.b)) > 0.0 && pdfLight > 0.0) {
+                        // Shadow ray from the offset origin to exactly the sampled light point.
+                        vec3 shadowDir = wi;
+                        float shadowMax = dist;
+                        if (dist < 1e29) {
+                            vec3 toLight = hit_point + wi * dist - ray_origin;
+                            shadowMax = length(toLight);
+                            shadowDir = toLight / shadowMax;
+                        }
+                        // Delta lights can't be hit by BSDF rays; the last vertex has no BSDF
+                        // continuation. Both take full weight, otherwise power heuristic.
+                        float w = (isDelta || i == bounces - 1) ? 1.0 : pdfLight * pdfLight / (pdfLight * pdfLight + pdfBsdf * pdfBsdf);
+                        shO[shCount] = ray_origin;
+                        shD[shCount] = shadowDir;
+                        shMax[shCount] = shadowMax * (1.0 - 1e-3);
+                        shVal[shCount] = contribution * f * dot(normal, wi) * Li * fog_transmittance(ray_origin, shadowDir, shadowMax) / pdfLight * w;
+                        ++shCount;
+                    }
+                }
+            }
+
+            // Continue the path by sampling the BRDF.
+            vec3 wi;
+            if (!opaque_sample(mat, normal, wo, wi))
+                { done = true; continue; }
+            float pdfBsdf;
+            vec3 f = opaque_eval(mat, normal, wo, wi, pdfBsdf);
+            if (pdfBsdf <= 0.0)
+                { done = true; continue; }
+            contribution *= f * dot(normal, wi) / pdfBsdf;
+            ray_dir = wi;
+            rayinv = 1.0 / ray_dir;
+            prevDiffuse = neeVertex;
+            prevPoint = hit_point;
+            prevNormal = normal;
+            prevBsdfPdf = pdfBsdf;
+            // Russian roulette: continue with probability p (by throughput) and divide
+            // survivors by p. Unbiased; skipped at the last vertex (nothing left to trace).
+            if (rrStart >= 0 && i >= rrStart && i < bounces - 1) {
+                float p = clamp(max(contribution.r, max(contribution.g, contribution.b)), 0.05, 1.0);
+                if (random() >= p)
+                    { done = true; continue; }
+                contribution /= p;
+            }
+            ++i;
         }
+        fcolor += light / float(samples);
     }
 
+    // Add this frame's light-traced caustic splats for the pixel and clear them.
+    if (useCausticTracing != 0) {
+        int ci = 3 * (pix.y * int(iResolution.x) + pix.x);
+        fcolor += vec3(causticAccum[ci], causticAccum[ci + 1], causticAccum[ci + 2]) / CAUSTIC_SCALE;
+        causticAccum[ci] = 0u;
+        causticAccum[ci + 1] = 0u;
+        causticAccum[ci + 2] = 0u;
+    }
     vec4 outColor = vec4(fcolor, 1.0);
     vec2 uv1 = coords.xy / iResolution.xy;
-    vec4 prevCol = imageLoad(prevFrame, pix);
+    vec4 prevCol = adaptive != 0 ? imageLoad(outputImage, pix) : imageLoad(prevFrame, pix);
     if (iTime > 1.0f) {
-        if (iFrame == 1) {
-            imageStore(outputImage, pix, outColor);
-            return;
+        if (iFrame == 1)
+            prevCol = vec4(0.0);
+        vec4 sum = outColor + prevCol;
+        imageStore(outputImage, pix, sum);
+        if (adaptive != 0) {
+            // Cycles' convergence test: compare the mean of all samples (I) with the mean of the
+            // odd-indexed ones (A, from the half buffer), relative to sqrt(intensity).
+            vec4 aux = imageLoad(adaptiveAux, pix);
+            if (int(prevCol.a) % 2 == 1)
+                aux.rgb += 2.0 * outColor.rgb;
+            float n = sum.a;
+            // aux.a: -1 converged, else the last noise estimate / threshold (0: none yet).
+            float state = aux.a;
+            bool converged = n >= float(adaptiveMaxSpp); // sample cap
+            if (!converged && n >= float(adaptiveMinSpp) && int(n) % 2 == 0) {
+                vec3 I = sum.rgb / n, A = aux.rgb / n;
+                float err = (abs(I.r - A.r) + abs(I.g - A.g) + abs(I.b - A.b)) / (1e-4 + sqrt(I.r + I.g + I.b));
+                converged = err < noiseThreshold;
+                state = err / noiseThreshold;
+            }
+            aux.a = converged ? -1.0 : state;
+            imageStore(adaptiveAux, pix, aux);
+            if (!converged)
+                atomicAdd(photonBuf[1], 1u);
         }
-        imageStore(outputImage, pix, outColor + prevCol);
     }
     #endif
 }
+#endif // LIGHT_TRACE

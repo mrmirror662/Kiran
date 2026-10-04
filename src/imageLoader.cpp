@@ -1,5 +1,7 @@
 #include "imageLoader.h"
 #include <vector>
+#include <cmath>
+#include <cctype>
 #include <stdexcept>
 #include<iostream>
 
@@ -11,6 +13,28 @@ namespace imgutl {
 	HDRI loadHDRI(const std::string& path)
 	{
 		HDRI hdri;
+
+		// LDR images (jpg/png): 8-bit sRGB decoded to linear radiance.
+		std::string ext = path.substr(path.find_last_of('.') + 1);
+		for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+		if (ext != "exr")
+		{
+			int w, h, ch;
+			unsigned char* px = stbi_load(path.c_str(), &w, &h, &ch, 3);
+			if (!px)
+				throw std::runtime_error("Failed to load environment image: " + path);
+			auto lin = [](unsigned char v) {
+				float c = v / 255.0f;
+				return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+			};
+			hdri.width = w;
+			hdri.height = h;
+			hdri.data.reserve(size_t(w) * h);
+			for (size_t i = 0; i < size_t(w) * h; ++i)
+				hdri.data.emplace_back(lin(px[3 * i]), lin(px[3 * i + 1]), lin(px[3 * i + 2]), 1.0f);
+			stbi_image_free(px);
+			return hdri;
+		}
 
 		// Variables to store the EXR image information
 		float* out;  // Output array of floats for image data

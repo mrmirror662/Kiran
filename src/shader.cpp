@@ -84,30 +84,25 @@ bool Shader::initUniform(const std::string &uniform_name)
 {
 	if (uniform_map.find(uniform_name) != uniform_map.end())
 		return true;
-	int uniform_location = glGetUniformLocation(this->id, uniform_name.c_str());
-	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: Uniform '" << uniform_name << "' not found in shader program!" << std::endl;
-		return false;
-	}
-	uniform_map[uniform_name] = uniform_location;
-	return true;
+	return getUniformLocation(uniform_name) != -1;
 }
+// Looks up (and caches) a uniform location; -1 when the program doesn't use it, in which
+// case setUniform is a silent no-op (shader variants may compile some uniforms away).
 int Shader::getUniformLocation(const std::string &uniform_name)
 {
-	if (uniform_map.find(uniform_name) == uniform_map.end())
-		return -1;
-	return this->uniform_map[uniform_name];
+	auto it = uniform_map.find(uniform_name);
+	if (it != uniform_map.end())
+		return it->second;
+	int location = glGetUniformLocation(this->id, uniform_name.c_str());
+	uniform_map[uniform_name] = location;
+	return location;
 }
 // set floats careful while passing types
 void Shader::setUniform(const std::string &name, float v1)
 {
 	int uniform_location = getUniformLocation(name);
 	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: setUniform called for '" << name << "' but location is -1!" << std::endl;
 		return;
-	}
 	glUniform1f(uniform_location, v1);
 }
 
@@ -115,20 +110,14 @@ void Shader::setUniform(const std::string &name, float v1, float v2)
 {
 	int uniform_location = getUniformLocation(name);
 	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: setUniform called for '" << name << "' but location is -1!" << std::endl;
 		return;
-	}
 	glUniform2f(uniform_location, v1, v2);
 }
 void Shader::setUniform(const std::string &name, float v1, float v2, float v3)
 {
 	int uniform_location = getUniformLocation(name);
 	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: setUniform called for '" << name << "' but location is -1!" << std::endl;
 		return;
-	}
 	glUniform3f(uniform_location, v1, v2, v3);
 }
 // set ints
@@ -136,10 +125,7 @@ void Shader::setUniform(const std::string &name, int v1)
 {
 	int uniform_location = getUniformLocation(name);
 	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: setUniform called for '" << name << "' but location is -1!" << std::endl;
 		return;
-	}
 	glUniform1i(uniform_location, v1);
 }
 
@@ -147,20 +133,14 @@ void Shader::setUniform(const std::string &name, int v1, int v2)
 {
 	int uniform_location = getUniformLocation(name);
 	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: setUniform called for '" << name << "' but location is -1!" << std::endl;
 		return;
-	}
 	glUniform2i(uniform_location, v1, v2);
 }
 void Shader::setUniform(const std::string &name, int v1, int v2, int v3)
 {
 	int uniform_location = getUniformLocation(name);
 	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: setUniform called for '" << name << "' but location is -1!" << std::endl;
 		return;
-	}
 	glUniform3i(uniform_location, v1, v2, v3);
 }
 
@@ -168,16 +148,21 @@ void Shader::setUniform(const std::string &name, uint64_t v1)
 {
 	int uniform_location = getUniformLocation(name);
 	if (uniform_location == -1)
-	{
-		std::cerr << "Warning: setUniform called for '" << name << "' but location is -1!" << std::endl;
 		return;
-	}
 	glUniformHandleui64ARB(uniform_location, v1);
 }
 
-Shader::Shader(const std::string &compSh)
+Shader::Shader(const std::string &compSh) : Shader(compSh, ShaderDefines{}) {}
+
+Shader::Shader(const std::string &compSh, const ShaderDefines &defines)
 {
 	auto compSrc = ReadShFile(compSh);
+	if (!defines.text.empty())
+	{
+		// Defines go right after the #version line.
+		size_t eol = compSrc.find('\n');
+		compSrc.insert(eol == std::string::npos ? compSrc.size() : eol + 1, defines.text);
+	}
 	unsigned int program = glCreateProgram();
 	unsigned int cs = CompileShader(compSrc, GL_COMPUTE_SHADER);
 	if (cs == -1)

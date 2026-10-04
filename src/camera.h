@@ -1,6 +1,7 @@
 #pragma once
 
 #include <GLFW/glfw3.h>
+#include "imgui.h"
 #include <glm/glm.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <iostream>
@@ -75,9 +76,12 @@ public:
 		// Apply vertical movement directly (world space)
 		this->position.y += offset.y;
 
-		// Handle mouse input
-		int state = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT);
-		if (state != GLFW_PRESS)
+		// Handle mouse input: right-drag, or left-drag when the cursor isn't over the UI
+		// (trackpads can't comfortably hold a right click while dragging).
+		bool rightDrag = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+		bool leftDrag = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS &&
+						!ImGui::GetIO().WantCaptureMouse;
+		if (!rightDrag && !leftDrag)
 		{
 			this->init_mouse = false;
 			return moved;

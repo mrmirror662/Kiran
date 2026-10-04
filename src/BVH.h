@@ -1,8 +1,10 @@
-﻿#pragma once
+#pragma once
 #include "primitives.h"
 #include <algorithm>
 #include <glm/glm.hpp>
+#include <cmath>
 #include <limits>
+#include <vector>
 
 struct BoundingBox
 {
@@ -79,88 +81,170 @@ struct BVHNode
 	BVHNode() : left(-1), right(-1), start(-1), end(-1) {}
 };
 
+// Binned-SAH BVH builder shared by both acceleration levels (BLAS over triangles,
+// TLAS over instances). Reorders `items` so every node covers items[start, end).
+template <typename T, typename BoundsFn, typename CentroidFn>
+class BVHBuilder
+{
+public:
+	BVHBuilder(std::vector<T>& items, std::vector<BVHNode>& nodes, int maxDepth, int leafSize,
+		BoundsFn bounds, CentroidFn centroid)
+		: items(items), nodes(nodes), maxDepth(maxDepth), leafSize(leafSize), bounds(bounds), centroid(centroid)
+	{
+		nodes.clear();
+		nodes.reserve(items.size() * 2);
+		buildNode(0, static_cast<int>(items.size()), 0);
+	}
+
+private:
+	std::vector<T>& items;
+	std::vector<BVHNode>& nodes;
+	int maxDepth;
+	int leafSize;
+	static constexpr int kMaxLeafPrims = 63;
+	BoundsFn bounds;
+	CentroidFn centroid;
+
+	static float surfaceArea(const BoundingBox& b)
+	{
+		glm::vec3 d = glm::max(b.max - b.min, glm::vec3(0.0f));
+		return 2.0f * (d.x * d.y + d.y * d.z + d.z * d.x);
+	}
+
+	int buildNode(int start, int end, int depth)
+	{
+		int nodeIndex = static_cast<int>(nodes.size());
+		nodes.emplace_back();
+		nodes[nodeIndex].start = start;
+		nodes[nodeIndex].end = end;
+
+		BoundingBox box;
+		glm::vec3 centroidMin(std::numeric_limits<float>::max());
+		glm::vec3 centroidMax(std::numeric_limits<float>::lowest());
+		for (int i = start; i < end; ++i)
+		{
+			box.expand(bounds(items[i]));
+			glm::vec3 c = centroid(items[i]);
+			centroidMin = glm::min(centroidMin, c);
+			centroidMax = glm::max(centroidMax, c);
+		}
+		nodes[nodeIndex].box = box;
+
+		glm::vec3 extent = centroidMax - centroidMin;
+		int axis = extent.x > extent.y ? (extent.x > extent.z ? 0 : 2)
+			: (extent.y > extent.z ? 1 : 2);
+		int count = end - start;
+		if (count <= 1)
+			return nodeIndex;
+		if (depth >= maxDepth || extent[axis] < 1e-5f)
+		{
+			// Forced leaf (depth cap, or centroids that cannot be separated). Leaves hold at
+			// most kMaxLeafPrims (the wide traversal packs counts into 6 bits): split larger
+			// ones at the median item, which always works, even past the depth cap.
+			if (count <= kMaxLeafPrims)
+				return nodeIndex;
+			int mid = (start + end) / 2;
+			std::nth_element(items.begin() + start, items.begin() + mid, items.begin() + end,
+				[&](const T& a, const T& b) { return centroid(a)[axis] < centroid(b)[axis]; });
+			int left = buildNode(start, mid, depth + 1);
+			int right = buildNode(mid, end, depth + 1);
+			nodes[nodeIndex].left = left;
+			nodes[nodeIndex].right = right;
+			return nodeIndex;
+		}
+
+		// Binned SAH along the widest centroid axis: minimise
+		// area(L) * count(L) + area(R) * count(R) over bin boundaries.
+		constexpr int kBins = 16;
+		BoundingBox binBox[kBins];
+		int binCount[kBins] = {};
+		float scale = kBins / extent[axis];
+		auto binOf = [&](const T& item)
+			{
+				int b = static_cast<int>((centroid(item)[axis] - centroidMin[axis]) * scale);
+				return std::min(b, kBins - 1);
+			};
+		for (int i = start; i < end; ++i)
+		{
+			int b = binOf(items[i]);
+			binCount[b]++;
+			binBox[b].expand(bounds(items[i]));
+		}
+
+		float rightCost[kBins] = {};
+		BoundingBox acc;
+		int accCount = 0;
+		for (int b = kBins - 1; b > 0; --b)
+		{
+			accCount += binCount[b];
+			if (binCount[b]) acc.expand(binBox[b]);
+			rightCost[b] = accCount ? surfaceArea(acc) * accCount : 0.0f;
+		}
+		float bestCost = std::numeric_limits<float>::max();
+		int bestSplit = -1; // items in bins [0, bestSplit] go left
+		acc = BoundingBox();
+		accCount = 0;
+		for (int b = 0; b < kBins - 1; ++b)
+		{
+			accCount += binCount[b];
+			if (binCount[b]) acc.expand(binBox[b]);
+			if (accCount == 0 || accCount == count)
+				continue;
+			float cost = surfaceArea(acc) * accCount + rightCost[b + 1];
+			if (cost < bestCost)
+			{
+				bestCost = cost;
+				bestSplit = b;
+			}
+		}
+
+		// Leaf if small enough and splitting would not beat intersecting everything here
+		// (a traversal step costs about half an intersection: measured best on Bistro).
+		float leafCost = surfaceArea(box) * count;
+		if (bestSplit < 0 || (count <= leafSize && 0.5f * surfaceArea(box) + bestCost >= leafCost))
+			return nodeIndex;
+
+		int mid = static_cast<int>(std::partition(items.begin() + start, items.begin() + end,
+			[&](const T& item) { return binOf(item) <= bestSplit; }) - items.begin());
+		if (mid == start || mid == end)
+		{
+			mid = (start + end) / 2;
+			std::nth_element(items.begin() + start, items.begin() + mid, items.begin() + end,
+				[&](const T& a, const T& b) { return centroid(a)[axis] < centroid(b)[axis]; });
+		}
+
+		// nodes may reallocate during recursion; assign through the index.
+		int left = buildNode(start, mid, depth + 1);
+		int right = buildNode(mid, end, depth + 1);
+		nodes[nodeIndex].left = left;
+		nodes[nodeIndex].right = right;
+		return nodeIndex;
+	}
+};
+
+template <typename T, typename BoundsFn, typename CentroidFn>
+void buildBVH(std::vector<T>& items, std::vector<BVHNode>& nodes, int maxDepth, int leafSize,
+	BoundsFn bounds, CentroidFn centroid)
+{
+	BVHBuilder<T, BoundsFn, CentroidFn>(items, nodes, maxDepth, leafSize, bounds, centroid);
+}
+
+// Triangle BVH (one BLAS).
 class BVH
 {
 public:
 	BVH(std::vector<Triangle> triangles, int maxDepth)
 		: triangles(std::move(triangles)), maxDepth(maxDepth)
 	{
-		buildBVH();
+		buildBVH(this->triangles, nodes, maxDepth, 8,
+			[](const Triangle& t) { return BoundingBox::getAABB(t); },
+			[](const Triangle& t) { return (t.v0 + t.v1 + t.v2) / 3.0f; });
 	}
 
 	const std::vector<BVHNode>& getNodes() const { return nodes; }
 	const std::vector<Triangle>& getTriangles() const { return triangles; }
 
-
 	std::vector<Triangle> triangles;
 	std::vector<BVHNode> nodes;
 	int maxDepth;
-
-	void buildBVH()
-	{
-		nodes.clear();
-		nodes.reserve(triangles.size() * 2);
-		buildNode(-1, 0, triangles.size(), 0);
-	}
-
-	int buildNode(int parent, int start, int end, int depth)
-	{
-		int nodeIndex = nodes.size();
-		nodes.emplace_back();
-		BVHNode& node = nodes.back();
-		node.start = start;
-		node.end = end;
-
-		// Build bounding box for current range
-		BoundingBox box;
-		for (int i = start; i < end; ++i)
-		{
-			const Triangle& tri = triangles[i];
-			box.expand(BoundingBox::getAABB(tri));
-		}
-
-		node.box = box;
-
-		int numTriangles = end - start;
-
-		// Compute centroid bounds
-		glm::vec3 centroidMin = glm::vec3(std::numeric_limits<float>::max());
-		glm::vec3 centroidMax = glm::vec3(std::numeric_limits<float>::lowest());
-		for (int i = start; i < end; ++i)
-		{
-			const Triangle& tri = triangles[i];
-			glm::vec3 centroid = (tri.v0 + tri.v1 + tri.v2) / 3.0f;
-			centroidMin = glm::min(centroidMin, centroid);
-			centroidMax = glm::max(centroidMax, centroid);
-		}
-
-		glm::vec3 extent = centroidMax - centroidMin;
-		int axis = extent.x > extent.y ? (extent.x > extent.z ? 0 : 2)
-			: (extent.y > extent.z ? 1 : 2);
-
-		// Fallback to leaf if extent is too small or other termination criteria
-		if (numTriangles <= 4 || depth >= maxDepth || extent[axis] < 1e-5f)
-		{
-			node.left = -1;
-			node.right = -1;
-			return nodeIndex;
-		}
-
-		// Partition triangles directly using nth_element by centroid along split axis
-		int mid = (start + end) / 2;
-		std::nth_element(
-			triangles.begin() + start,
-			triangles.begin() + mid,
-			triangles.begin() + end,
-			[axis](const Triangle& a, const Triangle& b)
-			{
-				float centroidA = (a.v0[axis] + a.v1[axis] + a.v2[axis]) / 3.0f;
-				float centroidB = (b.v0[axis] + b.v1[axis] + b.v2[axis]) / 3.0f;
-				return centroidA < centroidB;
-			});
-
-		node.left = buildNode(nodeIndex, start, mid, depth + 1);
-		node.right = buildNode(nodeIndex, mid, end, depth + 1);
-		return nodeIndex;
-	}
 };

@@ -12,15 +12,14 @@ BindlessTexture::BindlessTexture(int width, int height, int channel, std::vector
 	assert(!(channel != 3 && channel != 4));
 
 
-	if (channel == 3)
-		glTextureStorage2D(this->textureId, 1, GL_RGB8, width, height);
-	if (channel == 4)
-		glTextureStorage2D(this->textureId, 1, GL_RGBA8, width, height);
+	// Color maps are sRGB-encoded; sRGB storage makes the GPU decode them to linear on fetch.
+	glTextureStorage2D(this->textureId, 1, channel == 4 ? GL_SRGB8_ALPHA8 : GL_SRGB8, width, height);
 
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	glTextureSubImage2D(
 		this->textureId,
 		0, 0, 0, this->width, this->height, // level, xoffset, yoffset, width, height
-		GL_RGB, GL_UNSIGNED_BYTE,
+		channel == 4 ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE,
 		(const void*)this->buffer.data());
 
 	// Set the texture wrapping mode to repeat

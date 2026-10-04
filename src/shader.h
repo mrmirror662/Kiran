@@ -8,6 +8,12 @@ int CompileShader(const std::string &sh, unsigned int type);
 int CreateShader(const std::string &fragSh, const std::string &vertSh);
 std::string ReadShFile(const std::string &path);
 
+// Extra preprocessor lines for a compute shader variant.
+struct ShaderDefines
+{
+	std::string text;
+};
+
 class Shader
 {
 	int id;
@@ -17,6 +23,8 @@ class Shader
 public:
 	Shader(const std::string &fragSh, const std::string &vertSh);
 	Shader(const std::string &compSh); // Compute shader constructor
+	// Compute shader variant: `defines.text` (e.g. "#define FOO\n") goes after the #version line.
+	Shader(const std::string &compSh, const ShaderDefines &defines);
 	void bind();
 	void unBind();
 	int getId();

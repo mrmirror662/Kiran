@@ -553,7 +553,7 @@ void main()
                     vec2 interpolatedUv = vec2(0.0);
                     intersectTriangle(ray_origin, ray_dir, th.v0, th.v1, th.v2, th.n0, th.n1, th.n2, th.hasNormal, normal, th.uv0, th.uv1, th.uv2, th.hasTexture, interpolatedUv);
                     if (th.hasTexture) {
-                        vec3 texColor = texture(sampler2D(textureHandles[th.colourMapIndex]), interpolatedUv).rgb;
+                        vec3 texColor = texture(textureHandles[th.colourMapIndex], interpolatedUv).rgb;
                         mat.albedo = texColor;
                     }
                     // mat.albedo = th.hasTexture == true ? vec3(1, 0, 0) : vec3(0, 1, 0);
